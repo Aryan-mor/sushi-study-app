@@ -1,0 +1,237 @@
+import 'package:flutter/material.dart';
+
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:iconsax_plus/iconsax_plus.dart';
+
+import 'package:fladder/models/item_base_model.dart';
+import 'package:fladder/models/items/item_shared_models.dart';
+import 'package:fladder/providers/sync/sync_provider_helpers.dart';
+import 'package:fladder/screens/shared/media/components/poster_overlays.dart';
+import 'package:fladder/screens/shared/media/components/poster_placeholder.dart';
+import 'package:fladder/screens/syncing/sync_button.dart';
+import 'package:fladder/theme.dart';
+import 'package:fladder/util/adaptive_layout/adaptive_layout.dart';
+import 'package:fladder/util/fladder_image.dart';
+import 'package:fladder/util/focus_provider.dart';
+import 'package:fladder/sushi/sushi_detail_poster_badges.dart';
+import 'package:fladder/sushi/sushi_catalog_interest_status.dart';
+import 'package:fladder/sushi/sushi_boxset_availability_overlay.dart';
+import 'package:fladder/sushi/providers/sushi_catalog_item_flags.dart';
+import 'package:fladder/util/item_base_model/item_base_model_extensions.dart';
+import 'package:fladder/util/localization_helper.dart';
+import 'package:fladder/util/refresh_state.dart';
+import 'package:fladder/util/string_extensions.dart';
+import 'package:fladder/widgets/shared/item_actions.dart';
+import 'package:fladder/widgets/shared/modal_bottom_sheet.dart';
+import 'package:fladder/widgets/shared/status_card.dart';
+
+class PosterImage extends ConsumerWidget {
+  final ItemBaseModel poster;
+  final bool? selected;
+  final ValueChanged<bool>? playVideo;
+  final bool inlineTitle;
+  final Set<ItemActions> excludeActions;
+  final List<ItemAction> otherActions;
+  final Function(UserData? newData)? onUserDataChanged;
+  final Function(ItemBaseModel newItem)? onItemUpdated;
+  final Function(ItemBaseModel oldItem)? onItemRemoved;
+  final Function(Function() action, ItemBaseModel item)? onPressed;
+  final bool primaryPosters;
+  final Function(bool focus)? onFocusChanged;
+  final bool showSyncStatus;
+  final bool sushiDetailBadges;
+  final bool sushiContinueToggle;
+
+  const PosterImage({
+    required this.poster,
+    this.selected,
+    this.playVideo,
+    this.inlineTitle = false,
+    this.onItemUpdated,
+    this.onItemRemoved,
+    this.excludeActions = const {},
+    this.otherActions = const [],
+    this.onPressed,
+    this.onUserDataChanged,
+    this.primaryPosters = false,
+    this.onFocusChanged,
+    this.showSyncStatus = false,
+    this.sushiDetailBadges = false,
+    this.sushiContinueToggle = false,
+    super.key,
+  });
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final radius = FladderTheme.smallShape.borderRadius;
+    final padding = const EdgeInsets.all(5);
+    final myKey = key ?? UniqueKey();
+    final showFavourite = ref.watch(sushiCatalogItemFlagsProvider.select((s) => s.isFavorite(poster.id)));
+
+    return Hero(
+      tag: myKey,
+      child: FocusButton(
+        onTap: () async {
+          if (onPressed != null) {
+            onPressed?.call(() async {
+              await poster.navigateTo(context, ref: ref, tag: myKey);
+              context.refreshData();
+            }, poster);
+          } else {
+            await poster.navigateTo(context, ref: ref, tag: myKey);
+            if (!context.mounted) return;
+            context.refreshData();
+          }
+        },
+        onFocusChanged: onFocusChanged,
+        onLongPress: () => _showBottomSheet(context, ref),
+        onSecondaryTapDown: (details) => _showContextMenu(context, ref, details.globalPosition),
+        child: Container(
+          decoration: BoxDecoration(
+            borderRadius: radius,
+            color: Theme.of(context).colorScheme.surfaceContainer,
+          ),
+          foregroundDecoration: BoxDecoration(
+            borderRadius: radius,
+            border: Border.all(width: 1, color: Colors.white.withAlpha(45)),
+          ),
+          child: FladderImage(
+            image: primaryPosters
+                ? poster.images?.primary
+                : poster.getPosters?.primary ?? poster.getPosters?.backDrop?.lastOrNull,
+            placeHolder: PosterPlaceholder(item: poster),
+          ),
+        ),
+        overlays: [
+          if (sushiDetailPosterBadgesEnabled(sushiDetailBadges)) ...[
+            if (sushiRelatedMediaTypeBadge(context, poster) case final badge?) badge,
+          ],
+          if (sushiCatalogAvailabilityOverlay(poster) case final overlay?) overlay,
+          if (showSyncStatus)
+            Align(
+              alignment: Alignment.topRight,
+              child: ref.watch(syncedItemProvider(poster)).when(
+                    error: (error, stackTrace) => const SizedBox.shrink(),
+                    data: (syncedItem) {
+                      if (syncedItem == null) {
+                        return const SizedBox.shrink();
+                      }
+                      return StatusCard(
+                        child: SyncButton(item: poster, syncedItem: syncedItem),
+                      );
+                    },
+                    loading: () => const SizedBox.shrink(),
+                  ),
+            ),
+          if (selected == true)
+            SelectedPosterOverlay(
+              poster: poster,
+              radius: radius as BorderRadius,
+            ),
+          BottomOverlaysContainer(
+            showFavourite: showFavourite,
+            showProgress: true,
+            progress: poster.progress,
+            itemType: poster.type,
+            progressPadding: padding,
+          ),
+          if (inlineTitle)
+            InlineTitleOverlay(
+              title: poster.title.maxLength(limitTo: 25),
+            ),
+          UnplayedWatchedOverlay(
+            poster: poster,
+          ),
+          VideoDurationOverlay(
+            poster: poster,
+            padding: padding,
+          ),
+        ],
+        focusedOverlays: [
+          if (AdaptiveLayout.inputDeviceOf(context) == InputDevice.pointer) ...[
+            //  Play Button
+            if (poster.playAble)
+              Align(
+                alignment: Alignment.center,
+                child: IconButton.filledTonal(
+                  onPressed: () => playVideo?.call(false),
+                  icon: const Icon(
+                    IconsaxPlusBold.play,
+                    size: 32,
+                  ),
+                ),
+              ),
+            Align(
+              alignment: Alignment.bottomRight,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  PopupMenuButton(
+                    tooltip: context.localized.options,
+                    icon: const Icon(
+                      Icons.more_vert,
+                      color: Colors.white,
+                    ),
+                    itemBuilder: (context) => poster
+                        .generateActions(
+                          context,
+                          ref,
+                          exclude: excludeActions,
+                          otherActions: otherActions,
+                          sushiContinueToggle: sushiContinueToggle,
+                          onUserDataChanged: onUserDataChanged,
+                          onDeleteSuccesFully: onItemRemoved,
+                          onItemUpdated: onItemUpdated,
+                        )
+                        .popupMenuItems(useIcons: true),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Future<void> _showBottomSheet(BuildContext context, WidgetRef ref) async {
+    if (!context.mounted) return;
+    showBottomSheetPill(
+      context: context,
+      item: poster,
+      content: (scrollContext, scrollController) => sushiReactivePosterActionsList(
+        context: scrollContext,
+        ref: ref,
+        poster: poster,
+        scrollController: scrollController,
+        excludeActions: excludeActions,
+        otherActions: otherActions,
+        sushiContinueToggle: sushiContinueToggle,
+        onUserDataChanged: onUserDataChanged,
+        onDeleteSuccesFully: onItemRemoved,
+        onItemUpdated: onItemUpdated,
+      ),
+    );
+  }
+
+  Future<void> _showContextMenu(BuildContext context, WidgetRef ref, Offset globalPos) async {
+    if (!context.mounted) return;
+    final position = RelativeRect.fromLTRB(globalPos.dx, globalPos.dy, globalPos.dx, globalPos.dy);
+    await showMenu(
+      context: context,
+      position: position,
+      items: poster
+          .generateActions(
+            context,
+            ref,
+            exclude: excludeActions,
+            otherActions: otherActions,
+            sushiContinueToggle: sushiContinueToggle,
+            onUserDataChanged: onUserDataChanged,
+            onDeleteSuccesFully: onItemRemoved,
+            onItemUpdated: onItemUpdated,
+          )
+          .popupMenuItems(useIcons: true),
+    );
+  }
+}

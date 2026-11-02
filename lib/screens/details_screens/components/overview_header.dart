@@ -1,0 +1,549 @@
+import 'package:flutter/material.dart';
+
+import 'package:collection/collection.dart';
+import 'package:dynamic_color/dynamic_color.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:iconsax_plus/iconsax_plus.dart';
+
+import 'package:fladder/models/items/images_models.dart';
+import 'package:fladder/models/items/item_shared_models.dart';
+import 'package:fladder/models/items/watched_state.dart';
+import 'package:fladder/sushi/sushi_adult_content.dart';
+import 'package:fladder/sushi/sushi_media_streams.dart';
+import 'package:fladder/sushi/sushi_origin_country.dart';
+import 'package:fladder/sushi/widgets/sushi_iran_flag_icon.dart';
+import 'package:fladder/sushi/widgets/sushi_enum_box.dart';
+import 'package:fladder/screens/details_screens/components/media_stream_information.dart';
+import 'package:fladder/screens/shared/media/components/chip_button.dart';
+import 'package:fladder/screens/shared/media/components/media_header.dart';
+import 'package:fladder/theme.dart';
+import 'package:fladder/util/adaptive_layout/adaptive_layout.dart';
+import 'package:fladder/util/humanize_duration.dart';
+import 'package:fladder/util/list_padding.dart';
+import 'package:fladder/util/localization_helper.dart';
+import 'package:fladder/util/position_provider.dart';
+import 'package:fladder/util/string_extensions.dart';
+import 'package:fladder/widgets/shared/ensure_visible.dart';
+import 'package:fladder/widgets/shared/focus_row.dart';
+import 'package:fladder/widgets/shared/item_actions.dart';
+
+class OverviewHeader extends ConsumerWidget {
+  final String name;
+  final double? minHeight;
+  final bool disableheader;
+  final ImagesData? image;
+  final Widget? mainButton;
+  final Widget? poster;
+  final Widget? centerButtons;
+
+  /// Sits immediately after the version/file picker (before [centerButtons]).
+  final Widget? afterMediaStreams;
+  final EdgeInsets? padding;
+  final String? subTitle;
+  final String? originalTitle;
+  final Alignment logoAlignment;
+  final Function()? onTitleClicked;
+  final List<SimpleLabel> additionalLabels;
+  final List<String> contentTags;
+  final Iterable<String>? tmdbKeywords;
+  final String? productionYear;
+  final Widget? summary;
+  final Duration? runTime;
+  final String? officialRating;
+  final double? communityRating;
+  final List<Studio> studios;
+  final List<GenreItems> genres;
+  final MediaStreamHelper? mediaStreamHelper;
+  /// ISO 3166-1 alpha-2 origin country. Empty hides the chip.
+  final String? originCountry;
+  const OverviewHeader({
+    required this.name,
+    this.minHeight,
+    this.disableheader = false,
+    this.image,
+    this.mainButton,
+    this.poster,
+    this.centerButtons,
+    this.afterMediaStreams,
+    this.padding,
+    this.subTitle,
+    this.originalTitle,
+    this.logoAlignment = Alignment.bottomCenter,
+    this.onTitleClicked,
+    this.additionalLabels = const [],
+    this.contentTags = const [],
+    this.tmdbKeywords,
+    this.productionYear,
+    this.summary,
+    this.runTime,
+    this.officialRating,
+    this.communityRating,
+    this.genres = const [],
+    this.studios = const [],
+    this.mediaStreamHelper,
+    this.originCountry,
+    super.key,
+  });
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final mainStyle = Theme.of(context).textTheme.titleLarge?.copyWith(
+          fontWeight: FontWeight.bold,
+        );
+    final subStyle = Theme.of(context).textTheme.bodyMedium?.copyWith(
+          fontSize: 18,
+        );
+
+    final fullHeight =
+        (MediaQuery.sizeOf(context).height - (MediaQuery.paddingOf(context).top + 50)).clamp(50, 1250).toDouble();
+
+    final isPhone = AdaptiveLayout.viewSizeOf(context) == ViewSize.phone;
+
+    final crossAlignment = !isPhone ? CrossAxisAlignment.start : CrossAxisAlignment.stretch;
+
+    final streamHeight = 43.0;
+
+    final versionCurrentWidget = Row(
+      mainAxisSize: MainAxisSize.min,
+      spacing: 8,
+      children: [
+        Icon(
+          IconsaxPlusLinear.video_square,
+          color: Theme.of(context).colorScheme.onPrimaryContainer,
+        ),
+        Text(
+          mediaStreamHelper?.mediaStream.currentVersionStream != null
+              ? sushiVersionStreamLabel(
+                  mediaStreamHelper!.mediaStream.currentVersionStream!,
+                  l10n: context.localized,
+                  siblings: mediaStreamHelper!.mediaStream.versionStreams,
+                )
+              : '',
+        ),
+      ],
+    );
+    List<ItemAction> versionItemBuilder(BuildContext context) => mediaStreamHelper!.mediaStream.versionStreams
+        .mapIndexed(
+          (index, e) => ItemActionButton(
+            selected: mediaStreamHelper!.mediaStream.currentVersionStream == e,
+            label: Text(sushiVersionStreamLabel(
+              e,
+              l10n: context.localized,
+              siblings: mediaStreamHelper!.mediaStream.versionStreams,
+            )),
+            action: () {
+              final newItem = mediaStreamHelper!.mediaStream.copyWith(
+                versionStreamIndex: e.index,
+              );
+              mediaStreamHelper!.onItemChanged?.call(newItem);
+            },
+          ),
+        )
+        .toList();
+
+    final streamOptionsButtons = [
+      if (mediaStreamHelper != null && sushiShowVersionStreamPicker(mediaStreamHelper!.mediaStream))
+        SizedBox(
+          height: streamHeight,
+          child: SushiEnumBox(
+                  onFocusChanged: (focused) {
+                    if (focused) {
+                      context.ensureVisible(alignment: 1.0);
+                    }
+                  },
+                  currentWidget: versionCurrentWidget,
+                  itemBuilder: versionItemBuilder,
+                ),
+        ),
+    ].withPositionProvider(context: context);
+
+    return ConstrainedBox(
+      constraints: BoxConstraints(
+        minHeight: minHeight ?? fullHeight,
+      ),
+      child: Padding(
+        padding: padding ?? EdgeInsets.zero,
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.end,
+          crossAxisAlignment: crossAlignment,
+          mainAxisSize: MainAxisSize.min,
+          spacing: 12,
+          children: [
+            if (!isPhone)
+              Flexible(
+                child: Row(
+                  spacing: 16,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (poster != null) poster!,
+                    Flexible(
+                      child: ExcludeFocus(
+                        child: Center(
+                          child: MediaHeader(
+                            name: name,
+                            logo: image?.logo,
+                            onTap: onTitleClicked,
+                            alignment: logoAlignment,
+                          ),
+                        ),
+                      ),
+                    )
+                  ],
+                ),
+              )
+            else
+              Column(
+                spacing: 16,
+                mainAxisSize: MainAxisSize.min,
+                mainAxisAlignment: MainAxisAlignment.end,
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  if (poster != null) poster!,
+                  ExcludeFocus(
+                    child: Center(
+                      child: MediaHeader(
+                        name: name,
+                        logo: image?.logo,
+                        onTap: onTitleClicked,
+                        alignment: logoAlignment,
+                      ),
+                    ),
+                  )
+                ],
+              ),
+            ExcludeFocus(
+              excluding: AdaptiveLayout.inputDeviceOf(context) == InputDevice.dPad,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: crossAlignment,
+                children: [
+                  if (subTitle != null && name.toLowerCase() != subTitle!.toLowerCase())
+                    Flexible(
+                      child: SelectableText(
+                        subTitle ?? "",
+                        textAlign: TextAlign.center,
+                        style: mainStyle,
+                        maxLines: 1,
+                      ),
+                    ),
+                  if (name.toLowerCase() != originalTitle?.toLowerCase() && originalTitle != null)
+                    SelectableText(
+                      originalTitle.toString(),
+                      textAlign: TextAlign.center,
+                      style: subStyle,
+                    ),
+                ].addInBetween(const SizedBox(height: 4)),
+              ),
+            ),
+            Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: crossAlignment,
+              spacing: 10,
+              children: [
+                ExcludeFocus(
+                  excluding: AdaptiveLayout.inputDeviceOf(context) == InputDevice.dPad,
+                  child: MetadataLabels(
+                    officialRating: officialRating,
+                    productionYear: productionYear,
+                    runTime: runTime,
+                    communityRating: communityRating,
+                    originCountry: originCountry,
+                  ),
+                ),
+                _SushiGenresWithAdultChip(
+                  genres: genres,
+                  contentTags: contentTags,
+                  officialRating: officialRating,
+                  tmdbKeywords: tmdbKeywords,
+                ),
+                if (additionalLabels.isNotEmpty)
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    direction: Axis.horizontal,
+                    alignment: WrapAlignment.center,
+                    runAlignment: WrapAlignment.center,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: additionalLabels,
+                  ),
+              ],
+            ),
+            if (summary != null) summary!,
+            if (AdaptiveLayout.viewSizeOf(context) <= ViewSize.phone)
+              // Trailer / quality / watch-later / ⋯ live inside [SushiDetailPrimaryRow].
+              Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                spacing: 8,
+                children: [
+                  if (mainButton != null) mainButton!,
+                ],
+              )
+            else
+              Flexible(
+                child: FocusRow(
+                  ensureVisibleAlignment: 1.0,
+                  child: AdaptiveLayout.inputDeviceOf(context) == InputDevice.dPad
+                      // Still a single logical focus group (d-pad left/right walks every
+                      // button in reading order), but a [Wrap] so the row after the play +
+                      // subtitle panel spills onto the next line instead of overflowing.
+                      ? Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          crossAxisAlignment: WrapCrossAlignment.center,
+                          children: [
+                            if (mainButton != null) mainButton!,
+                            if (mediaStreamHelper != null)
+                              Row(
+                                spacing: 4,
+                                mainAxisSize: MainAxisSize.min,
+                                children: streamOptionsButtons,
+                              ),
+                            if (afterMediaStreams != null) afterMediaStreams!,
+                            if (centerButtons != null) centerButtons!,
+                          ],
+                        )
+                      : Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          crossAxisAlignment: WrapCrossAlignment.center,
+                          children: [
+                            mainButton,
+                            if (mediaStreamHelper != null)
+                              Row(
+                                spacing: 4,
+                                mainAxisSize: MainAxisSize.min,
+                                children: streamOptionsButtons,
+                              ),
+                            afterMediaStreams,
+                            centerButtons,
+                          ].nonNulls.toList().addInBetween(
+                                Container(
+                                  width: 4,
+                                  height: 12,
+                                  decoration: BoxDecoration(
+                                    color: Theme.of(context).colorScheme.onSurface.withAlpha(64),
+                                    borderRadius: FladderTheme.smallShape.borderRadius,
+                                  ),
+                                ),
+                              ),
+                        ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SushiGenresWithAdultChip extends StatelessWidget {
+  final List<GenreItems> genres;
+  final List<String> contentTags;
+  final String? officialRating;
+  final Iterable<String>? tmdbKeywords;
+
+  const _SushiGenresWithAdultChip({
+    required this.genres,
+    this.contentTags = const [],
+    this.officialRating,
+    this.tmdbKeywords,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final genreChips = genres.take(6).toList();
+    final adultLabels = SushiAdultContent.labels(
+            tags: contentTags,
+            officialRating: officialRating,
+            keywords: tmdbKeywords,
+          );
+
+    if (genreChips.isEmpty && adultLabels.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      alignment: WrapAlignment.center,
+      runAlignment: WrapAlignment.center,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        for (final genre in genreChips)
+          ChipButton(
+            onPressed: null,
+            label: genre.name.capitalize(),
+          ),
+        ...adultLabels,
+      ],
+    );
+  }
+}
+
+Widget? _originMark(String? iso) {
+  final code = iso?.trim().toUpperCase() ?? '';
+  if (code == 'IR') return const SushiIranFlagIcon(size: 18);
+  final emoji = sushiCountryFlagEmoji(code);
+  if (emoji == null) return null;
+  return Text(emoji, style: const TextStyle(fontSize: 16, height: 1));
+}
+
+class MetadataLabels extends StatelessWidget {
+  final bool? favourite;
+  final String? officialRating;
+  final String? productionYear;
+  final Duration? runTime;
+  final double? communityRating;
+  final WatchedState? playLabel;
+  final List<Widget> additionalLabels;
+  final String? originCountry;
+
+  const MetadataLabels({
+    this.favourite,
+    this.officialRating,
+    this.productionYear,
+    this.runTime,
+    this.communityRating,
+    this.playLabel,
+    this.additionalLabels = const [],
+    this.originCountry,
+    super.key,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final playState = playLabel;
+
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      direction: Axis.horizontal,
+      alignment: WrapAlignment.center,
+      runAlignment: WrapAlignment.center,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        if (officialRating != null)
+          SimpleLabel(
+            icon: null,
+            label: Row(
+              mainAxisSize: MainAxisSize.min,
+              spacing: 4,
+              children: [
+                Text(officialRating.toString()),
+                if (SushiAdultContent.ratingConveysAdult(officialRating))
+                  SushiAdultContent.adultEmoji,
+              ],
+            ),
+          ),
+        if (sushiOriginCountryLabel(originCountry, Localizations.localeOf(context).languageCode) case final country?)
+          SimpleLabel(
+            iconWidget: _originMark(originCountry),
+            color: Theme.of(context).colorScheme.surfaceBright,
+            label: Text(country),
+          ),
+        if (productionYear != null)
+          SimpleLabel(
+            icon: IconsaxPlusBold.calendar,
+            color: Theme.of(context).colorScheme.surfaceBright,
+            label: SelectableText(
+              productionYear.toString(),
+              textAlign: TextAlign.center,
+            ),
+          ),
+        if (runTime != null && (runTime?.inSeconds ?? 0) > 1)
+          SimpleLabel(
+            icon: IconsaxPlusBold.timer,
+            color: Theme.of(context).colorScheme.surfaceBright,
+            iconColor: Theme.of(context).colorScheme.onSurface,
+            label: SelectableText(
+              runTime.humanize.toString(),
+              textAlign: TextAlign.center,
+            ),
+          ),
+        if (communityRating != null && communityRating != 0.0)
+          SimpleLabel(
+            icon: IconsaxPlusBold.star_1,
+            color: Theme.of(context).colorScheme.tertiaryContainer,
+            iconColor: Theme.of(context).colorScheme.onTertiaryContainer,
+            label: Text(
+              communityRating?.toStringAsFixed(2) ?? "",
+            ),
+          ),
+        if (favourite != null)
+          SimpleLabel(
+            icon: favourite == true ? IconsaxPlusBold.heart : IconsaxPlusLinear.heart,
+            color: Theme.of(context).colorScheme.error,
+            iconColor: Theme.of(context).colorScheme.onError,
+          ),
+        if (playState case PartiallyPlayed(:final label))
+          SimpleLabel(
+            color: Theme.of(context).colorScheme.onPrimary,
+            iconColor: Theme.of(context).colorScheme.primary,
+            label: Text(label),
+          )
+        else if (playState case Played())
+          SimpleLabel(
+            icon: Icons.check_rounded,
+            color: Theme.of(context).colorScheme.onPrimary,
+            iconColor: Theme.of(context).colorScheme.primary,
+          ),
+        ...additionalLabels,
+      ].addInBetween(CircleAvatar(
+        radius: 3,
+        backgroundColor: Theme.of(context).colorScheme.onSurface,
+      )),
+    );
+  }
+}
+
+class SimpleLabel extends StatelessWidget {
+  final IconData? icon;
+  final Widget? iconWidget;
+  final Widget? label;
+  final Color? color;
+  final Color? iconColor;
+  const SimpleLabel({
+    this.icon,
+    this.iconWidget,
+    this.label,
+    this.color,
+    this.iconColor,
+    super.key,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final backgroundColor = (color ?? Theme.of(context).colorScheme.surfaceBright)
+        .harmonizeWith(Theme.of(context).colorScheme.primaryContainer);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        borderRadius: FladderTheme.smallShape.borderRadius,
+        color: backgroundColor.withAlpha(200),
+        border: Border.all(
+          color: backgroundColor.withAlpha(255),
+        ),
+      ),
+      child: DefaultTextStyle(
+        style: Theme.of(context).textTheme.bodyMedium!.copyWith(
+              color: iconColor ?? Theme.of(context).colorScheme.onSurface,
+            ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          spacing: 4,
+          children: [
+            if (icon != null)
+              Icon(
+                icon,
+                size: 21,
+                color: iconColor ?? Theme.of(context).colorScheme.onSurface,
+              ),
+            if (iconWidget != null) iconWidget!,
+            if (label != null) label!
+          ],
+        ),
+      ),
+    );
+  }
+}

@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>nl.jknaapen.fladder</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+  <name>Sushi</name>
+  <summary>Telegram media library client</summary>
+  
+  <description>
+    <p>
+      Sushi is a cross-platform client focused on your Telegram media library.
+      Sign in with Telegram, browse catalogued media, and stream with a Flutter UI.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>Telegram-first sign-in and library access</li>
+      <li>Responsive layout for phone, tablet, and desktop</li>
+      <li>Hardware-accelerated video playback</li>
+      <li>Multiple profiles where supported</li>
+      <li>Offline features on supported platforms</li>
+      <li>Cross-platform builds</li>
+    </ul>
+  </description>
+  
+  <launchable type="desktop-id">nl.jknaapen.fladder.desktop</launchable>
+  
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/DonutWare/Fladder/develop/assets/marketing/screenshots/Tablet/Dashboard.png</image>
+      <caption>Main dashboard</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/DonutWare/Fladder/develop/assets/marketing/screenshots/Tablet/Library.png</image>
+      <caption>Media library view</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/DonutWare/Fladder/develop/assets/marketing/screenshots/Tablet/Details.png</image>
+      <caption>Content details</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/DonutWare/Fladder/develop/assets/marketing/screenshots/Tablet/Player.png</image>
+      <caption>Video player</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/DonutWare/Fladder/develop/assets/marketing/screenshots/Tablet/Library_Search.png</image>
+      <caption>Library search</caption>
+    </screenshot>
+  </screenshots>
+  
+  <url type="homepage">https://github.com/DonutWare/Fladder</url>
+  <url type="bugtracker">https://github.com/DonutWare/Fladder/issues</url>
+  <url type="vcs-browser">https://github.com/DonutWare/Fladder</url>
+  
+  <developer id="nl.jknaapen">
+    <name>DonutWare</name>
+  </developer>
+  
+  <content_rating type="oars-1.1">
+    <content_attribute id="social-info">mild</content_attribute>
+  </content_rating>
+  
+  <releases>
+    <release version="0.10.3" date="2026-04-13">
+      <description>
+        <p>See the full changelog at: https://github.com/DonutWare/Fladder/releases/tag/v0.10.3</p>
+      </description>
+    </release>
+  </releases>
+  
+  <requires>
+    <internet>always</internet>
+  </requires>
+  
+  <categories>
+    <category>AudioVideo</category>
+    <category>Player</category>
+  </categories>
+  
+  <keywords>
+    <keyword>telegram</keyword>
+    <keyword>sushi</keyword>
+    <keyword>media</keyword>
+    <keyword>streaming</keyword>
+    <keyword>video</keyword>
+    <keyword>audio</keyword>
+    <keyword>music</keyword>
+  </keywords>
+</component>

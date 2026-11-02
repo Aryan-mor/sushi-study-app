@@ -1,0 +1,39 @@
+import 'package:auto_route/auto_route.dart';
+import 'package:flutter/widgets.dart';
+
+import 'package:fladder/models/items/episode_model.dart';
+import 'package:fladder/routes/auto_router.gr.dart';
+
+/// True when [seriesId] is already open anywhere on the details stack (not only top).
+bool sushiRouterStackHasSeriesDetail(StackRouter router, String seriesId) {
+  for (final page in router.stack) {
+    if (page.name != DetailsRoute.name) continue;
+    final routeData = page.routeData;
+    final queryId = routeData.queryParams.getString('id', '');
+    if (queryId == seriesId) return true;
+    final args = routeData.args;
+    if (args is DetailsRouteArgs && args.id == seriesId) return true;
+  }
+  return false;
+}
+
+/// When opening an episode from home (Next Up / Continue Watching), land on the
+/// series page so Follow, seasons, and request actions are available.
+///
+/// If the user is already on that series detail screen, keep Fladder behavior
+/// and open the episode page (e.g. tapping another episode in the row).
+Future<bool> sushiMaybeNavigateEpisodeToSeries(
+  BuildContext context,
+  EpisodeModel episode, {
+  Object? tag,
+}) async {
+  
+
+  final seriesId = episode.parentId;
+  if (seriesId == null || seriesId.isEmpty) return false;
+
+  if (sushiRouterStackHasSeriesDetail(context.router, seriesId)) return false;
+
+  await context.router.push(DetailsRoute(id: seriesId, item: episode.parentBaseModel, tag: tag));
+  return true;
+}

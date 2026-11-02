@@ -1,0 +1,217 @@
+import 'dart:convert';
+import 'dart:developer';
+import 'dart:io';
+
+import 'package:flutter/material.dart';
+
+import 'package:background_downloader/background_downloader.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:freezed_annotation/freezed_annotation.dart';
+import 'package:iconsax_plus/iconsax_plus.dart';
+import 'package:path/path.dart';
+
+import 'package:fladder/jellyfin/jellyfin_open_api.swagger.dart';
+import 'package:fladder/models/item_base_model.dart';
+import 'package:fladder/models/items/chapters_model.dart';
+import 'package:fladder/models/items/images_models.dart';
+import 'package:fladder/models/items/item_shared_models.dart';
+import 'package:fladder/models/items/media_segments_model.dart';
+import 'package:fladder/models/items/media_streams_model.dart';
+import 'package:fladder/models/items/trick_play_model.dart';
+import 'package:fladder/models/syncing/transcode_download_model.dart';
+import 'package:fladder/util/localization_helper.dart';
+
+part 'sync_item.freezed.dart';
+
+@Freezed(copyWith: true)
+abstract class SyncedItem with _$SyncedItem {
+  const SyncedItem._();
+
+  factory SyncedItem({
+    required String id,
+    @Default(false) bool syncing,
+    String? parentId,
+    required String userId,
+    String? path,
+    @Default(false) bool markedForDelete,
+    String? sortName,
+    int? fileSize,
+    String? videoFileName,
+    MediaSegmentsModel? mediaSegments,
+    TrickPlayModel? fTrickPlayModel,
+    ImagesData? fImages,
+    @Default([]) List<Chapter> fChapters,
+    @Default([]) List<SubStreamModel> subtitles,
+    @Default(false) bool unSyncedData,
+    @UserDataJsonSerializer() UserData? userData,
+    TranscodeDownloadModel? transcodeDownloadModel,
+    // ignore: invalid_annotation_target
+    @JsonKey(includeFromJson: false, includeToJson: false) ItemBaseModel? itemModel,
+  }) = _SyncItem;
+
+  static String trickPlayPath = "TrickPlay";
+  static String chaptersPath = "Chapters";
+
+  List<Chapter> get chapters => fChapters.map((e) => e.copyWith(imageUrl: joinAll({"$path", e.imageUrl}))).toList();
+
+  ImagesData? get images => fImages?.copyWith(
+        primary: () => fImages?.primary?.copyWith(path: joinAll(["$path", "${fImages?.primary?.path}"])),
+        logo: () => fImages?.logo?.copyWith(path: joinAll(["$path", "${fImages?.logo?.path}"])),
+        backDrop: () => fImages?.backDrop?.map((e) => e.copyWith(path: joinAll(["$path", (e.path)]))).toList(),
+      );
+
+  TrickPlayModel? get trickPlayModel => fTrickPlayModel?.copyWith(
+      images: fTrickPlayModel?.images
+              .map(
+                (trickPlayPath) => joinAll(["$path", trickPlayPath]),
+              )
+              .toList() ??
+          []);
+
+  File get dataFile => File(joinAll(["$path", "data.json"]));
+  File get overlayFile => File(joinAll(["$path", "overlay.json"]));
+
+  List<String> get playlistChildIds {
+    if (!overlayFile.existsSync()) return [];
+    try {
+      final overlay = jsonDecode(overlayFile.readAsStringSync()) as Map<String, dynamic>;
+      final ids = overlay['playlistChildIds'];
+      if (ids is List) return ids.whereType<String>().toList();
+    } catch (_) {}
+    return [];
+  }
+
+  bool get isTranscoded {
+    if (!overlayFile.existsSync()) return false;
+    final overlay = jsonDecode(overlayFile.readAsStringSync()) as Map<String, dynamic>;
+    return overlay['isTranscoded'] == true;
+  }
+
+  BaseItemDto? get data {
+    if (!dataFile.existsSync()) return null;
+    BaseItemDto dto = BaseItemDto.fromJson(jsonDecode(dataFile.readAsStringSync()));
+    if (overlayFile.existsSync()) {
+      final overlay = jsonDecode(overlayFile.readAsStringSync()) as Map<String, dynamic>;
+      dto = _applyOverlay(dto, overlay);
+    }
+    return dto.copyWith(userData: UserData.toDto(userData), path: videoFile.existsSync() ? videoFile.path : '');
+  }
+
+  static BaseItemDto _applyOverlay(BaseItemDto dto, Map<String, dynamic> overlay) {
+    final container = overlay['container'] as String?;
+    final mediaSources = overlay['mediaSources'] as List<dynamic>?;
+
+    return dto.copyWith(
+      container: container ?? dto.container,
+      mediaSources: mediaSources != null
+          ? mediaSources.map((e) => MediaSourceInfo.fromJson(e as Map<String, dynamic>)).toList()
+          : dto.mediaSources,
+    );
+  }
+
+  Directory get trickPlayDirectory => Directory(joinAll(["$path", trickPlayPath]));
+  File get videoFile => File(joinAll(["$path", "$videoFileName"]));
+  Directory get directory => Directory(path ?? "");
+
+  TaskStatus get status => switch (videoFile.existsSync()) {
+        true => TaskStatus.complete,
+        _ => TaskStatus.notFound,
+      };
+
+  double get totalProgress => 0.0;
+
+  bool get hasVideoFile => videoFileName?.isNotEmpty == true && (fileSize ?? 0) > 0;
+
+  TaskStatus get anyStatus {
+    return TaskStatus.notFound;
+  }
+
+  Future<bool> deleteDatFiles(Ref ref) async {
+    bool success = true;
+    for (final entity in [
+      videoFile,
+      overlayFile,
+      Directory(joinAll([directory.path, trickPlayPath])),
+      Directory(joinAll([directory.path, chaptersPath])),
+    ]) {
+      try {
+        if (entity is File) {
+          if (entity.existsSync()) await entity.delete();
+        } else if (entity is Directory) {
+          if (entity.existsSync()) await entity.delete(recursive: true);
+        }
+      } catch (e) {
+        log('Failed to delete ${entity.path} for item $id: $e');
+        success = false;
+      }
+    }
+    return success;
+  }
+
+  Future<int> get getDirSize async {
+    var files = await directory.list(recursive: true).toList();
+    var dirSize = files.fold(0, (int sum, file) => sum + file.statSync().size);
+    return dirSize;
+  }
+
+  ItemBaseModel? createItemModel(Ref ref) {
+    if (!dataFile.existsSync()) return null;
+    BaseItemDto itemDto = BaseItemDto.fromJson(jsonDecode(dataFile.readAsStringSync()));
+    if (overlayFile.existsSync()) {
+      final overlay = jsonDecode(overlayFile.readAsStringSync()) as Map<String, dynamic>;
+      itemDto = _applyOverlay(itemDto, overlay);
+    }
+    final itemModel = ItemBaseModel.fromBaseDto(itemDto, ref);
+    return itemModel.copyWith(
+      images: images,
+      userData: userData,
+    );
+  }
+}
+
+extension StatusExtension on TaskStatus {
+  IconData get icon => switch (this) {
+        TaskStatus.enqueued => IconsaxPlusLinear.calendar_circle,
+        TaskStatus.running => IconsaxPlusLinear.arrow_down_1,
+        TaskStatus.complete => IconsaxPlusLinear.tick_circle,
+        TaskStatus.notFound => IconsaxPlusLinear.warning_2,
+        TaskStatus.failed => IconsaxPlusLinear.tag_cross,
+        TaskStatus.canceled => IconsaxPlusLinear.tag_cross,
+        TaskStatus.waitingToRetry => IconsaxPlusLinear.clock,
+        TaskStatus.paused => IconsaxPlusLinear.pause_circle,
+      };
+
+  Color color(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    return isDarkMode
+        ? switch (this) {
+            TaskStatus.enqueued => Colors.blueAccent,
+            TaskStatus.running => Colors.greenAccent,
+            TaskStatus.complete => Colors.limeAccent,
+            TaskStatus.notFound => const Color.fromARGB(255, 221, 135, 23),
+            TaskStatus.canceled || TaskStatus.failed => Theme.of(context).colorScheme.error,
+            TaskStatus.waitingToRetry => Colors.yellowAccent,
+            TaskStatus.paused => Colors.tealAccent,
+          }
+        : switch (this) {
+            TaskStatus.enqueued => Colors.blue,
+            TaskStatus.running => Colors.green,
+            TaskStatus.complete => Colors.lime,
+            TaskStatus.notFound => const Color.fromARGB(255, 221, 135, 23),
+            TaskStatus.canceled || TaskStatus.failed => Theme.of(context).colorScheme.error,
+            TaskStatus.waitingToRetry => Colors.yellow,
+            TaskStatus.paused => Colors.teal,
+          };
+  }
+
+  String name(BuildContext context) => switch (this) {
+        TaskStatus.enqueued => context.localized.syncStatusEnqueued,
+        TaskStatus.running => context.localized.syncStatusRunning,
+        TaskStatus.complete => context.localized.syncStatusSynced,
+        TaskStatus.notFound => context.localized.syncStatusNotFound,
+        TaskStatus.failed => context.localized.syncStatusFailed,
+        TaskStatus.canceled => context.localized.syncStatusCanceled,
+        TaskStatus.waitingToRetry => context.localized.syncStatusWaitingToRetry,
+        TaskStatus.paused => context.localized.syncStatusPaused,
+      };
+}

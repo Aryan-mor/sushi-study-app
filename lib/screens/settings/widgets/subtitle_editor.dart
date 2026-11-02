@@ -1,0 +1,103 @@
+import 'package:flutter/material.dart';
+
+import 'package:flutter_blurhash/flutter_blurhash.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import 'package:fladder/models/settings/subtitle_settings_model.dart';
+import 'package:fladder/providers/settings/subtitle_settings_provider.dart';
+import 'package:fladder/providers/settings/video_player_settings_provider.dart';
+import 'package:fladder/screens/video_player/components/video_subtitle_controls.dart';
+import 'package:fladder/util/localization_helper.dart';
+
+class SubtitleEditor extends ConsumerStatefulWidget {
+  const SubtitleEditor({super.key});
+
+  @override
+  ConsumerState<ConsumerStatefulWidget> createState() => _SubtitleEditorState();
+}
+
+class _SubtitleEditorState extends ConsumerState<SubtitleEditor> {
+  @override
+  Widget build(BuildContext context) {
+    final settings = ref.watch(subtitleSettingsProvider);
+    final fillScreen = ref.watch(videoPlayerSettingsProvider.select((value) => value.fillScreen));
+    final padding = MediaQuery.of(context).padding;
+    final fakeText = context.localized.subtitleConfiguratorPlaceHolder;
+    double lastScale = 0.0;
+
+    return Padding(
+      padding: EdgeInsets.only(top: MediaQuery.paddingOf(context).top),
+      child: Dialog.fullscreen(
+        child: Column(
+          children: [
+            Row(
+              children: [
+                const BackButton(),
+                Text(
+                  context.localized.subtitleConfigurator,
+                  style: Theme.of(context).textTheme.headlineMedium,
+                )
+              ],
+            ),
+            Flexible(
+              child: GestureDetector(
+                onScaleUpdate: (details) {
+                  lastScale = details.scale;
+                },
+                onScaleEnd: (details) {
+                  if (lastScale < 1.0) {
+                    ref.read(videoPlayerSettingsProvider.notifier).setFillScreen(false, context: context);
+                  } else if (lastScale > 1.0) {
+                    ref.read(videoPlayerSettingsProvider.notifier).setFillScreen(true, context: context);
+                  }
+                  lastScale = 0.0;
+                },
+                child: Row(
+                  children: [
+                    Expanded(
+                      flex: 3,
+                      child: AspectRatio(
+                        aspectRatio: 2.1,
+                        child: Stack(
+                          children: [
+                            Padding(
+                              padding: (fillScreen
+                                  ? EdgeInsets.zero
+                                  : EdgeInsets.only(left: padding.left, right: padding.right)),
+                              child: const Center(
+                                child: AspectRatio(
+                                  aspectRatio: 2.1,
+                                  child: Card(
+                                    child: Image(
+                                      image: BlurHashImage('LEF}}|0000~p8w~W%N4n~pIU4o%g'),
+                                      fit: BoxFit.fill,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            SubtitleText(
+                                subModel: settings, padding: padding, offset: settings.verticalOffset, text: fakeText),
+                          ],
+                        ),
+                      ),
+                    ),
+                    Expanded(
+                      flex: 2,
+                      child: Padding(
+                        padding: MediaQuery.paddingOf(context).add(
+                          const EdgeInsets.all(32).add(const EdgeInsets.only(top: 48)),
+                        ),
+                        child: const VideoSubtitleControls(),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}

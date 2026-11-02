@@ -1,0 +1,334 @@
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+import 'package:auto_route/auto_route.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:iconsax_plus/iconsax_plus.dart';
+import 'package:window_manager/window_manager.dart';
+
+import 'package:fladder/sushi/sushi_brand.dart';
+import 'package:fladder/sushi/sushi_app_update.dart';
+import 'package:fladder/sushi/sushi_env.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:fladder/sushi/sushi_navigation.dart';
+import 'package:fladder/sushi/sushi_settings_visibility.dart';
+import 'package:fladder/providers/arguments_provider.dart';
+import 'package:fladder/providers/auth_provider.dart';
+import 'package:fladder/providers/user_provider.dart';
+import 'package:fladder/routes/auto_router.gr.dart';
+import 'package:fladder/screens/settings/quick_connect_window.dart';
+import 'package:fladder/screens/settings/settings_list_tile.dart';
+import 'package:fladder/screens/settings/settings_scaffold.dart';
+import 'package:fladder/screens/shared/default_alert_dialog.dart';
+import 'package:fladder/screens/shared/fladder_icon.dart';
+import 'package:fladder/screens/shared/fladder_notification_overlay.dart';
+import 'package:fladder/util/application_info.dart';
+import 'package:fladder/util/adaptive_layout/adaptive_layout.dart';
+import 'package:fladder/util/localization_helper.dart';
+import 'package:fladder/util/theme_extensions.dart';
+
+@RoutePage()
+class SettingsScreen extends ConsumerStatefulWidget {
+  const SettingsScreen({super.key});
+
+  @override
+  ConsumerState<ConsumerStatefulWidget> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends ConsumerState<SettingsScreen> {
+  final scrollController = ScrollController();
+  final minVerticalPadding = 20.0;
+  late LayoutMode lastAdaptiveLayout = AdaptiveLayout.layoutModeOf(context);
+
+  @override
+  Widget build(BuildContext context) {
+    return AutoTabsRouter(
+      builder: (context, content) {
+        checkForNullIndex(context);
+        return PopScope(
+          canPop: context.tabsRouter.activeIndex == 0 || AdaptiveLayout.layoutModeOf(context) == LayoutMode.dual,
+          onPopInvokedWithResult: (didPop, result) {
+            if (!didPop) {
+              context.tabsRouter.setActiveIndex(0);
+            }
+          },
+          child: AdaptiveLayout.layoutModeOf(context) == LayoutMode.single
+              ? Card(
+                  elevation: 0,
+                  child: Stack(
+                    children: [
+                      _leftPane(context),
+                      content,
+                    ],
+                  ),
+                )
+              : Row(
+                  mainAxisSize: MainAxisSize.max,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Expanded(flex: 2, child: _leftPane(context)),
+                    Expanded(
+                      flex: 3,
+                      child: Padding(
+                        padding: EdgeInsets.only(
+                          left: MediaQuery.paddingOf(context).left,
+                        ),
+                        child: content,
+                      ),
+                    ),
+                  ],
+                ),
+        );
+      },
+    );
+  }
+
+  //We have to navigate to the first screen after switching layouts && index == 0 otherwise the dual-layout is empty
+  void checkForNullIndex(BuildContext context) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final currentIndex = context.tabsRouter.activeIndex;
+      if (AdaptiveLayout.layoutModeOf(context) == LayoutMode.dual && currentIndex == 0) {
+        context.tabsRouter.setActiveIndex(1);
+      }
+    });
+  }
+
+  IconData get deviceIcon {
+    if (AdaptiveLayout.of(context).isDesktop) {
+      return IconsaxPlusLinear.monitor;
+    }
+    switch (AdaptiveLayout.viewSizeOf(context)) {
+      case ViewSize.phone:
+        return IconsaxPlusLinear.mobile;
+      case ViewSize.tablet:
+        return IconsaxPlusLinear.monitor;
+      case ViewSize.desktop:
+        return IconsaxPlusLinear.monitor;
+      case ViewSize.television:
+        return IconsaxPlusLinear.mirroring_screen;
+    }
+  }
+
+  Widget _leftPane(BuildContext context) {
+    void navigateTo(PageRouteInfo route) => context.tabsRouter.navigate(route);
+
+    bool containsRoute(PageRouteInfo route) =>
+        AdaptiveLayout.layoutModeOf(context) == LayoutMode.dual && context.tabsRouter.current.name == route.routeName;
+
+    final quickConnectAvailable =
+        ref.watch(userProvider.select((value) => value?.serverConfiguration?.quickConnectAvailable ?? false));
+
+    final applicationInfo = ref.watch(applicationInfoProvider);
+
+    final isAdmin = ref.watch(userProvider.select((value) => value?.policy?.isAdministrator ?? false));
+
+    return Padding(
+      padding: EdgeInsetsDirectional.only(start: AdaptiveLayout.of(context).sideBarWidth),
+      child: Container(
+        color: context.colors.surface,
+        child: SettingsScaffold(
+          label: context.localized.settings,
+          scrollController: scrollController,
+          showBackButtonNested: AdaptiveLayout.inputDeviceOf(context) != InputDevice.dPad,
+          showUserIcon: true,
+          items: [
+            ValueListenableBuilder<SushiLatestApp?>(
+              valueListenable: sushiLatestApp,
+              builder: (context, latest, _) {
+                if (latest == null ||
+                    !sushiIsNewerApp(applicationInfo.version, latest.version)) {
+                  return const SizedBox.shrink();
+                }
+                final copy = SushiUpdateCopy.of(context);
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Card(
+                    color: context.colors.secondaryContainer,
+                    child: SettingsListTile(
+                      label: Text(copy.bannerTitle),
+                      subLabel: Text(copy.bannerSub(latest.version)),
+                      icon: IconsaxPlusLinear.document_download,
+                      onTap: () async {
+                        final prefs = await SharedPreferences.getInstance();
+                        if (!context.mounted) return;
+                        await sushiShowUpdateDialog(
+                          context: context,
+                          currentVersion: applicationInfo.version,
+                          prefs: prefs,
+                        );
+                      },
+                    ),
+                  ),
+                );
+              },
+            ),
+            SettingsListTile(
+              label: Text(context.localized.settingsClientTitle),
+              subLabel: Text(context.localized.settingsClientDesc),
+              autoFocus: true,
+              selected: containsRoute(const ClientSettingsRoute()),
+              icon: deviceIcon,
+              onTap: () => navigateTo(const ClientSettingsRoute()),
+            ),
+            if (isAdmin && SushiSettingsVisibility.showControlPanel)
+              SettingsListTile(
+                label: Text(context.localized.controlPanel),
+                subLabel: Text(context.localized.controlPanelDesc),
+                selected: containsRoute(const ControlPanelSelectionRoute()),
+                icon: IconsaxPlusLinear.chart_3,
+                onTap: () => const ControlPanelSelectionRoute().navigate(context),
+              ),
+            SettingsListTile(
+              label: Text(context.localized.settingsProfileTitle),
+              subLabel: Text(context.localized.settingsProfileDesc),
+              selected: containsRoute(const ProfileSettingsRoute()),
+              icon: IconsaxPlusLinear.security_user,
+              onTap: () => navigateTo(const ProfileSettingsRoute()),
+            ),
+            if (SushiEnv.isEnabled)
+              SettingsListTile(
+                label: Text(
+                  Localizations.localeOf(context).languageCode == 'fa' ? 'سلیقه' : 'Taste',
+                ),
+                subLabel: Text(
+                  Localizations.localeOf(context).languageCode == 'fa'
+                      ? 'تنظیم دوباره ژانر، فیلم‌ها، بازیگرها…'
+                      : 'Redo genres, titles, actors…',
+                ),
+                icon: IconsaxPlusLinear.heart,
+                onTap: () => context.router.push(SushiTasteWizardRoute(fromProfile: true)),
+              ),
+            SettingsListTile(
+              label: Text(context.localized.settingsPlayerTitle),
+              subLabel: Text(context.localized.settingsPlayerDesc),
+              selected: containsRoute(const PlayerSettingsRoute()),
+              icon: IconsaxPlusLinear.video_play,
+              onTap: () => navigateTo(const PlayerSettingsRoute()),
+            ),
+            SettingsListTile(
+              label: Text(context.localized.about),
+              subLabel: Text(
+                '${SushiBrand.appName} v${applicationInfo.version}',
+              ),
+              selected: containsRoute(const AboutSettingsRoute()),
+              leading: Opacity(
+                opacity: 1,
+                child: FladderIconOutlined(
+                  size: 24,
+                  color: context.colors.onSurfaceVariant,
+                ),
+              ),
+              onTap: () => navigateTo(const AboutSettingsRoute()),
+            ),
+            const FractionallySizedBox(
+              widthFactor: 0.25,
+              child: Divider(),
+            ),
+            if (quickConnectAvailable)
+              SettingsListTile(
+                label: Text(context.localized.settingsQuickConnectTitle),
+                icon: IconsaxPlusLinear.password_check,
+                onTap: () => openQuickConnectDialog(context),
+              ),
+            if (ref.watch(argumentsStateProvider.select((value) => value.htpcMode)))
+              SettingsListTile(
+                label: Text(context.localized.exitFladderTitle),
+                icon: IconsaxPlusLinear.close_square,
+                onTap: () async {
+                  showDefaultAlertDialog(
+                    context,
+                    context.localized.exitFladderTitle,
+                    context.localized.exitFladderDesc,
+                    (context) async {
+                      if (AdaptiveLayout.of(context).isDesktop) {
+                        final manager = WindowManager.instance;
+                        if (await manager.isClosable()) {
+                          manager.close();
+                        } else {
+                          FladderSnack.show(context.localized.somethingWentWrong, context: context);
+                        }
+                      } else {
+                        SystemNavigator.pop();
+                      }
+                    },
+                    context.localized.close,
+                    (context) => context.pop(),
+                    context.localized.cancel,
+                  );
+                },
+              ),
+            if (SushiSettingsVisibility.showSwitchUser)
+              SettingsListTile(
+                label: Text(context.localized.switchUser),
+                icon: IconsaxPlusLinear.arrow_swap_horizontal,
+                contentColor: Colors.greenAccent,
+                onTap: () async {
+                  await ref.read(authProvider.notifier).switchUser();
+                  if (context.mounted) {
+                    context.router.replaceAll(sushiSignOutRouteList());
+                    await ref.read(authProvider.notifier).initModel();
+                  }
+                },
+              ),
+            SettingsListTile(
+              label: Text(context.localized.logout),
+              icon: IconsaxPlusLinear.logout,
+              contentColor: Theme.of(context).colorScheme.error,
+              onTap: () {
+                final user = ref.read(userProvider);
+                final userName = user?.name ?? "";
+                final title = context.localized.sushiLogoutUserPopupTitle(userName);
+                final body = context.localized.sushiLogoutUserPopupContent(userName);
+                showDialog(
+                  context: context,
+                  barrierDismissible: false,
+                  builder: (context) {
+                    var loggingOut = false;
+                    return StatefulBuilder(
+                      builder: (context, setDialogState) => AlertDialog(
+                        title: Text(title),
+                        scrollable: true,
+                        content: Text(body),
+                        actions: [
+                          ElevatedButton(
+                            onPressed: loggingOut ? null : () => Navigator.pop(context),
+                            child: Text(context.localized.cancel),
+                          ),
+                          ElevatedButton(
+                            style: ElevatedButton.styleFrom().copyWith(
+                              iconColor: WidgetStatePropertyAll(Theme.of(context).colorScheme.onErrorContainer),
+                              foregroundColor: WidgetStatePropertyAll(Theme.of(context).colorScheme.onErrorContainer),
+                              backgroundColor: WidgetStatePropertyAll(Theme.of(context).colorScheme.errorContainer),
+                            ),
+                            onPressed: loggingOut
+                                ? null
+                                : () async {
+                                    setDialogState(() => loggingOut = true);
+                                    await ref.read(authProvider.notifier).logOutUser();
+                                    if (context.mounted) {
+                                      Navigator.pop(context);
+                                      context.router.replaceAll(sushiSignOutRouteList());
+                                      await ref.read(authProvider.notifier).initModel();
+                                    }
+                                  },
+                            child: loggingOut
+                                ? const SizedBox(
+                                    width: 18,
+                                    height: 18,
+                                    child: CircularProgressIndicator(strokeWidth: 2),
+                                  )
+                                : Text(context.localized.logout),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}

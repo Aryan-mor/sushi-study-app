@@ -1,0 +1,231 @@
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:iconsax_plus/iconsax_plus.dart';
+
+import 'package:fladder/models/credentials_model.dart';
+import 'package:fladder/providers/discovery_provider.dart';
+import 'package:fladder/services/local_network_permission.dart';
+import 'package:fladder/util/fladder_config.dart';
+import 'package:fladder/util/list_padding.dart';
+import 'package:fladder/util/localization_helper.dart';
+import 'package:fladder/util/theme_extensions.dart';
+
+class DiscoverServersWidget extends ConsumerWidget {
+  final List<CredentialsModel> serverCredentials;
+  final Function(DiscoveryInfo server) onPressed;
+  const DiscoverServersWidget({
+    required this.serverCredentials,
+    required this.onPressed,
+    super.key,
+  });
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    if (FladderConfig.baseUrl?.isNotEmpty == true) return const SizedBox.shrink();
+    final existingServers = serverCredentials
+        .map(
+          (credentials) => DiscoveryInfo(
+            id: credentials.serverId,
+            name: credentials.serverName,
+            address: credentials.url,
+            endPointAddress: null,
+          ),
+        )
+        .toSet()
+        .toList();
+    final discoverdServersStream = ref.watch(serverDiscoveryProvider);
+    return ListView(
+      padding: const EdgeInsets.all(0),
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      children: [
+        if (existingServers.isNotEmpty) ...[
+          Row(
+            children: [
+              Text(
+                context.localized.saved,
+                style: context.textTheme.bodyLarge,
+              ),
+              const Spacer(),
+              const Opacity(opacity: 0.65, child: Icon(IconsaxPlusLinear.bookmark, size: 16)),
+            ],
+          ),
+          const SizedBox(height: 4),
+          ...existingServers
+              .map(
+                (server) => _ServerInfoCard(
+                  server: server,
+                  onPressed: onPressed,
+                ),
+              )
+              .toList()
+              .addInBetween(const SizedBox(height: 4)),
+        ],
+        if (!kIsWeb) ...[
+          const Divider(),
+          Row(
+            children: [
+              Text(
+                context.localized.discovered,
+                style: context.textTheme.bodyLarge,
+              ),
+              const Spacer(),
+              const Opacity(opacity: 0.65, child: Icon(IconsaxPlusBold.airdrop, size: 16)),
+            ],
+          ),
+          const SizedBox(height: 4),
+          discoverdServersStream.when(
+            data: (data) {
+              final servers = data.where((discoverdServer) => !existingServers.contains(discoverdServer));
+              return servers.isNotEmpty
+                  ? Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        ...servers.map(
+                          (serverInfo) => _ServerInfoCard(
+                            server: serverInfo,
+                            onPressed: onPressed,
+                          ),
+                        )
+                      ].toList().addInBetween(const SizedBox(height: 4)),
+                    )
+                  : Center(
+                      child: Opacity(
+                      opacity: 0.65,
+                      child: Text(
+                        context.localized.noServersFound,
+                        style: context.textTheme.bodyLarge,
+                      ),
+                    ));
+            },
+            error: (error, stackTrace) => error is LocalNetworkPermissionDeniedException
+                ? _LocalNetworkPermissionButton(
+                    onPermissionChanged: () => ref.invalidate(serverDiscoveryProvider),
+                  )
+                : Text(context.localized.error),
+            loading: () => const Center(
+              child: SizedBox.square(
+                dimension: 24.0,
+                child: CircularProgressIndicator(strokeCap: StrokeCap.round),
+              ),
+            ),
+          ),
+        ],
+        const SizedBox(height: 32),
+      ],
+    );
+  }
+}
+
+class _LocalNetworkPermissionButton extends StatefulWidget {
+  const _LocalNetworkPermissionButton({required this.onPermissionChanged});
+
+  final VoidCallback onPermissionChanged;
+
+  @override
+  State<_LocalNetworkPermissionButton> createState() => _LocalNetworkPermissionButtonState();
+}
+
+class _LocalNetworkPermissionButtonState extends State<_LocalNetworkPermissionButton> {
+  bool _loading = false;
+  bool _permissionDenied = false;
+
+  Future<void> _handlePermission() async {
+    if (_loading) return;
+    setState(() => _loading = true);
+
+    var permissionStatus = await requestLocalNetworkPermission();
+    if (permissionStatus == LocalNetworkPermissionStatus.denied && mounted) {
+      setState(() => _permissionDenied = true);
+      permissionStatus = await openLocalNetworkPermissionSettings();
+    }
+
+    if (!mounted) return;
+    setState(() => _loading = false);
+    widget.onPermissionChanged();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        Text(
+          _permissionDenied
+              ? context.localized.localNetworkPermissionDenied
+              : context.localized.localNetworkPermissionRequest,
+        ),
+        const SizedBox(height: 8),
+        FilledButton.icon(
+          onPressed: _loading ? null : _handlePermission,
+          icon: _loading
+              ? const SizedBox.square(
+                  dimension: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : Icon(_permissionDenied ? Icons.settings : Icons.lock_open),
+          label: Text(
+            _permissionDenied ? context.localized.openSettings : context.localized.requestPermission,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ServerInfoCard extends StatelessWidget {
+  final Function(DiscoveryInfo server) onPressed;
+  final DiscoveryInfo server;
+  const _ServerInfoCard({
+    required this.server,
+    required this.onPressed,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: TextButton(
+        onPressed: () => onPressed(server),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 12),
+          child: Row(
+            mainAxisSize: MainAxisSize.max,
+            children: [
+              Card(
+                color: Theme.of(context).colorScheme.primaryContainer,
+                child: Padding(
+                  padding: const EdgeInsets.all(8.0),
+                  child: Icon(
+                    IconsaxPlusBold.driver,
+                    color: Theme.of(context).colorScheme.onPrimaryContainer,
+                  ),
+                ),
+              ),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      server.name,
+                      style: context.textTheme.bodyLarge,
+                    ),
+                    Opacity(
+                      opacity: 0.6,
+                      child: Text(
+                        server.address,
+                        style: context.textTheme.bodyMedium,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Icon(IconsaxPlusLinear.edit_2, size: 16)
+            ].addInBetween(const SizedBox(width: 12)),
+          ),
+        ),
+      ),
+    );
+  }
+}

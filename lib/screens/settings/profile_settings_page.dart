@@ -1,0 +1,346 @@
+import 'dart:io';
+
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+
+import 'package:auto_route/auto_route.dart';
+import 'package:collection/collection.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import 'package:fladder/jellyfin/jellyfin_open_api.enums.swagger.dart' as enums;
+import 'package:fladder/providers/cultures_provider.dart';
+import 'package:fladder/providers/home_preferences_provider.dart';
+import 'package:fladder/providers/settings/client_settings_provider.dart';
+import 'package:fladder/providers/update_notifications_provider.dart';
+import 'package:fladder/providers/user_provider.dart';
+import 'package:fladder/screens/settings/settings_list_tile.dart';
+import 'package:fladder/screens/settings/settings_scaffold.dart';
+import 'package:fladder/screens/settings/widgets/password_reset_dialog.dart';
+import 'package:fladder/screens/settings/widgets/settings_label_divider.dart';
+import 'package:fladder/screens/settings/widgets/settings_list_group.dart';
+import 'package:fladder/screens/settings/widgets/settings_message_box.dart';
+import 'package:fladder/screens/shared/authenticate_button_options.dart';
+import 'package:fladder/screens/shared/fladder_notification_overlay.dart';
+import 'package:fladder/services/battery_optimization.dart';
+import 'package:fladder/services/notification_service.dart';
+import 'package:fladder/util/jellyfin_extension.dart';
+import 'package:fladder/util/localization_helper.dart';
+import 'package:fladder/util/simple_duration_picker.dart';
+import 'package:fladder/routes/auto_router.gr.dart';
+import 'package:fladder/sushi/sushi_env.dart';
+import 'package:fladder/sushi/sushi_profile_delete_account.dart';
+import 'package:fladder/sushi/sushi_settings_visibility.dart';
+import 'package:fladder/widgets/shared/filled_button_await.dart';
+import 'package:fladder/widgets/shared/item_actions.dart';
+
+@RoutePage()
+class ProfileSettingsPage extends ConsumerStatefulWidget {
+  const ProfileSettingsPage({super.key});
+
+  @override
+  ConsumerState<ConsumerStatefulWidget> createState() => _UserSettingsPageState();
+}
+
+class _UserSettingsPageState extends ConsumerState<ProfileSettingsPage> with WidgetsBindingObserver {
+  bool? enabledBatteryOptimization;
+
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      checkBatteryOptimization();
+      ref.read(homePreferencesProvider.notifier).load();
+    });
+  }
+
+  Future<bool> checkBatteryOptimization() async {
+    if (!kIsWeb && Platform.isAndroid) {
+      final optimizing = !(await BatteryOptimization.isIgnoringBatteryOptimizations());
+      setState(() {
+        enabledBatteryOptimization = optimizing;
+      });
+      return optimizing;
+    }
+    return true;
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.resumed) {
+      checkBatteryOptimization();
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final user = ref.watch(userProvider);
+    final cultures = ref.watch(culturesProvider);
+    final clientSettings = ref.watch(clientSettingsProvider);
+    final lastUpdateAt = ref.watch(notificationsProvider).updatedAt;
+
+    final allowedSubModes = {
+      enums.SubtitlePlaybackMode.$default,
+      enums.SubtitlePlaybackMode.smart,
+      enums.SubtitlePlaybackMode.onlyforced,
+      enums.SubtitlePlaybackMode.always,
+      enums.SubtitlePlaybackMode.none,
+    };
+    return SettingsScaffold(
+      label: context.localized.settingsProfileTitle,
+      bottomActions: [
+        if (SushiSettingsVisibility.showProfileHomePreferencesSave)
+          FilledButtonAwait(
+            onPressed: () async {
+              await FladderSnack.showResponse(
+                ref.read(homePreferencesProvider.notifier).save(),
+                successTitle: context.localized.saved,
+              );
+            },
+            child: Text(context.localized.save),
+          ),
+      ],
+      items: [
+        ...settingsListGroup(
+          context,
+          SettingsLabelDivider(label: context.localized.settingsSecurity),
+          [
+            SettingsListTile(
+              label: Text(context.localized.settingSecurityApplockTitle),
+              subLabel: Text(user?.authMethod.name(context) ?? ""),
+              onTap: () => showAuthOptionsDialogue(
+                context,
+                user!,
+                (newUser) {
+                  ref.read(userProvider.notifier).updateUser(newUser);
+                },
+              ),
+            ),
+            SettingsListTileCheckbox(
+              label: Text(context.localized.profileSettingsOpenAuthAtLaunch),
+              value: user?.askForAuthOnLaunch ?? false,
+              onChanged: user?.authMethod.shouldLock == true
+                  ? (val) async {
+                      if (user == null || val == null) return;
+                      ref.read(userProvider.notifier).updateUser(
+                            user.copyWith(askForAuthOnLaunch: val),
+                          );
+                    }
+                  : null,
+            ),
+            if (SushiSettingsVisibility.showProfilePasswordReset)
+              SettingsListTile(
+                label: Text(context.localized.password),
+                onTap: () => openPasswordResetDialog(context),
+              ),
+          ],
+        ),
+        if (SushiSettingsVisibility.showProfileSubtitlePreferences) ...[
+          const SizedBox(height: 16),
+          ...settingsListGroup(
+            context,
+            SettingsLabelDivider(label: context.localized.subtitles),
+            [
+              Builder(builder: (context) {
+                final anyLanguageLabel = context.localized.anyLanguage;
+                final subtitleLanguagePreference =
+                    user?.userConfiguration?.subtitleLanguagePreference?.trim().toLowerCase();
+                final hasSubtitleLanguagePreference = subtitleLanguagePreference?.isNotEmpty == true;
+
+                final currentCulture = cultures.firstWhereOrNull(
+                  (e) => e.matchesLanguageCode(subtitleLanguagePreference),
+                );
+
+                return SettingsListTileEnum(
+                  label: Text(context.localized.settingsProfileSubtitleLanguage),
+                  current: !hasSubtitleLanguagePreference
+                      ? anyLanguageLabel
+                      : currentCulture?.displayName ?? context.localized.unknown,
+                  itemBuilder: (context) => [
+                    ItemActionButton(
+                      selected: !hasSubtitleLanguagePreference,
+                      label: Text(anyLanguageLabel),
+                      action: () {
+                        ref.read(userProvider.notifier).updateSubtitleLanguagePreference(null);
+                      },
+                    ),
+                    ...cultures.map(
+                      (e) => ItemActionButton(
+                        selected: e.matchesLanguageCode(subtitleLanguagePreference),
+                        label: Text(e.displayName ?? e.name ?? context.localized.unknown),
+                        action: () {
+                          ref.read(userProvider.notifier).updateSubtitleLanguagePreference(
+                              e.threeLetterISOLanguageName?.toLowerCase() ?? e.twoLetterISOLanguageName?.toLowerCase());
+                        },
+                      ),
+                    ),
+                  ],
+                );
+              }),
+              SettingsListTileEnum(
+                label: Text(context.localized.settingsProfileSubtitleMode),
+                current: user?.userConfiguration?.subtitleMode?.label(context) ?? context.localized.none,
+                itemBuilder: (context) => allowedSubModes
+                    .map(
+                      (mode) => ItemActionButton(
+                        selected: user?.userConfiguration?.subtitleMode == mode,
+                        label: Text(mode.label(context)),
+                        action: () {
+                          ref.read(userProvider.notifier).updateSubtitleMode(mode);
+                        },
+                      ),
+                    )
+                    .toList(),
+              ),
+            ],
+          ),
+        ],
+        if (SushiSettingsVisibility.showProfileJellyfinNotifications &&
+            ref.watch(supportsNotificationsProvider)) ...[
+          const SizedBox(height: 16),
+          ...settingsListGroup(
+            context,
+            SettingsLabelDivider(label: context.localized.notifications),
+            [
+              Column(
+                children: [
+                  SettingsListTileEnum(
+                    label: Text(context.localized.updateCheckInterval),
+                    subLabel: Text(context.localized.updateCheckIntervalDesc),
+                    current: timePickerString(context, clientSettings.updateNotificationsInterval),
+                    itemBuilder: (context) {
+                      final durations = const [
+                        Duration(minutes: 15),
+                        Duration(minutes: 30),
+                        Duration(hours: 1),
+                        Duration(hours: 3),
+                        Duration(hours: 6),
+                        Duration(hours: 12),
+                        Duration(days: 1),
+                      ];
+                      return durations.map((duration) {
+                        return ItemActionButton(
+                          label: Text(timePickerString(context, duration)),
+                          action: () =>
+                              ref.read(clientSettingsProvider.notifier).setUpdateNotificationsInterval(duration),
+                        );
+                      }).toList();
+                    },
+                  ),
+                  if (lastUpdateAt != null)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: Align(
+                        alignment: Alignment.centerRight,
+                        child: Text(
+                          context.localized.lastUpdateAt(lastUpdateAt, lastUpdateAt),
+                          style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                                color: Theme.of(context).textTheme.bodyMedium?.color?.withAlpha(155),
+                              ),
+                        ),
+                      ),
+                    ),
+                  SettingsMessageBox(
+                    context.localized.notificationsIntervalClientReminder,
+                    messageType: MessageType.info,
+                  ),
+                  if (enabledBatteryOptimization == true)
+                    SettingsMessageBox(
+                      context.localized.batteryOptimizationDesc,
+                      messageType: MessageType.warning,
+                      onTap: () async {
+                        await BatteryOptimization.openBatteryOptimizationSettings();
+                        if (!mounted) return;
+                        await checkBatteryOptimization();
+                      },
+                    ),
+                  if (!kIsWeb && Platform.isIOS)
+                    SettingsMessageBox(
+                      context.localized.notificationTimerIOSWarning,
+                      messageType: MessageType.info,
+                    ),
+                ],
+              ),
+              SettingsListTileCheckbox(
+                label: Text(context.localized.showNewItemNotificationTitle),
+                value: user?.updateNotificationsEnabled ?? false,
+                onChanged: (val) async {
+                  final current = ref.read(userProvider);
+                  if (current == null || val == null) return;
+
+                  ref.read(userProvider.notifier).userState = current.copyWith(updateNotificationsEnabled: val);
+
+                  if (val) {
+                    await NotificationService.requestPermission();
+                    await ref.read(updateNotificationsProvider).registerBackgroundTask();
+                  } else {
+                    await ref.read(updateNotificationsProvider).conditionallyUnregisterBackgroundTask();
+                  }
+                },
+              ),
+              SettingsListTileCheckbox(
+                label: Text(context.localized.includeHiddenItems),
+                subLabel: Text(context.localized.includeHiddenItemsDesc),
+                value: user?.includeHiddenViews ?? false,
+                onChanged: user?.updateNotificationsEnabled ?? false
+                    ? (val) async {
+                        final current = ref.read(userProvider);
+                        if (current == null || val == null) return;
+                        ref.read(userProvider.notifier).userState = current.copyWith(
+                          includeHiddenViews: val,
+                        );
+                        await ref.read(updateNotificationsProvider).registerBackgroundTask();
+                      }
+                    : null,
+              ),
+              if (kDebugMode) ...[
+                SettingsListTile(
+                  label: const Text('Show notification (debug)'),
+                  onTap: () async => await ref.read(updateNotificationsProvider).executeBackgroundTask(),
+                ),
+                SettingsListTile(
+                  label: const Text('Cancel all tasks (debug)'),
+                  onTap: () async => await ref.read(updateNotificationsProvider).cancelAllTasks(),
+                ),
+              ],
+            ],
+          ),
+        ],
+        if (SushiEnv.isEnabled) ...[
+          const SizedBox(height: 16),
+          ...settingsListGroup(
+            context,
+            SettingsLabelDivider(
+              label: Localizations.localeOf(context).languageCode == 'fa' ? 'سلیقه' : 'Taste',
+            ),
+            [
+              SettingsListTile(
+                label: Text(
+                  Localizations.localeOf(context).languageCode == 'fa'
+                      ? 'تنظیم دوباره سلیقه'
+                      : 'Redo taste preferences',
+                ),
+                subLabel: Text(
+                  Localizations.localeOf(context).languageCode == 'fa'
+                      ? 'ژانر، عنوان‌ها، بازیگرها، کیفیت و دوبله'
+                      : 'Genres, titles, actors, quality and audio',
+                ),
+                onTap: () => context.router.push(SushiTasteWizardRoute(fromProfile: true)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          ...sushiProfileDeleteAccountGroup(context),
+        ],
+      ],
+    );
+  }
+}

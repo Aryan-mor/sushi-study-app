@@ -1,0 +1,279 @@
+import 'dart:convert';
+import 'dart:math' as math;
+
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+
+import 'package:collection/collection.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import 'package:fladder/sushi/playback/sushi_subtitle_font.dart';
+import 'package:fladder/providers/settings/subtitle_settings_provider.dart';
+import 'package:fladder/providers/settings/video_player_settings_provider.dart';
+import 'package:fladder/util/color_extensions.dart';
+
+class SubtitleSettingsModel {
+  final double fontSize;
+  final FontWeight fontWeight;
+  final double verticalOffset;
+  final Color color;
+  final Color outlineColor;
+  final double outlineSize;
+  final Color backGroundColor;
+  final double shadow;
+  const SubtitleSettingsModel({
+    this.fontSize = 60,
+    this.fontWeight = FontWeight.normal,
+    this.verticalOffset = 0.10,
+    this.color = Colors.white,
+    this.outlineColor = const Color.fromRGBO(0, 0, 0, 0.85),
+    this.outlineSize = 4,
+    this.backGroundColor = const Color.fromARGB(0, 0, 0, 0),
+    this.shadow = 0.5,
+  });
+
+  SubtitleSettingsModel copyWith({
+    double? fontSize,
+    FontWeight? fontWeight,
+    double? verticalOffset,
+    Color? color,
+    Color? outlineColor,
+    double? outlineSize,
+    Color? backGroundColor,
+    double? shadow,
+  }) {
+    return SubtitleSettingsModel(
+      fontSize: fontSize ?? this.fontSize,
+      fontWeight: fontWeight ?? this.fontWeight,
+      verticalOffset: verticalOffset ?? this.verticalOffset,
+      color: color ?? this.color,
+      outlineColor: outlineColor ?? this.outlineColor,
+      outlineSize: outlineSize ?? this.outlineSize,
+      backGroundColor: backGroundColor ?? this.backGroundColor,
+      shadow: shadow ?? this.shadow,
+    );
+  }
+
+  TextStyle get backGroundStyle {
+    return style.copyWith(
+      shadows: (shadow > 0.01)
+          ? [
+              Shadow(
+                blurRadius: 16,
+                color: Colors.black.withValues(alpha: shadow),
+              ),
+              Shadow(
+                blurRadius: 8,
+                color: Colors.black.withValues(alpha: shadow),
+              ),
+            ]
+          : null,
+      foreground: Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = outlineSize * (fontSize / 30)
+        ..color = outlineColor
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round,
+    );
+  }
+
+  TextStyle get style {
+    return TextStyle(
+      height: 1.4,
+      fontSize: fontSize,
+      fontWeight: fontWeight,
+      fontFamily: 'OpenSans',
+      letterSpacing: 0.0,
+      wordSpacing: 0.0,
+      color: color,
+    );
+  }
+
+  Map<String, dynamic> toMap() {
+    return <String, dynamic>{
+      'schema': SushiSubtitleFont.settingsSchema,
+      'fontSize': fontSize,
+      'fontWeight': fontWeight.value,
+      'verticalOffset': verticalOffset,
+      'color': color.toMap,
+      'outlineColor': outlineColor.toMap,
+      'outlineSize': outlineSize,
+      'backGroundColor': backGroundColor.toMap,
+      'shadow': shadow,
+    };
+  }
+
+  String toJson() => json.encode(toMap());
+
+  factory SubtitleSettingsModel.fromJson(String source) => SubtitleSettingsModel.fromMap(json.decode(source));
+
+  factory SubtitleSettingsModel.fromMap(Map<String, dynamic> map) {
+    return const SubtitleSettingsModel().copyWith(
+      fontSize: map['fontSize'] as double?,
+      fontWeight: FontWeight.values.firstWhereOrNull((element) => element.index == map['fontWeight'] as int?),
+      verticalOffset: map['verticalOffset'] as double?,
+      color: colorFromJson(map['color']),
+      outlineColor: colorFromJson(map['outlineColor']),
+      outlineSize: map['outlineSize'] as double?,
+      backGroundColor: colorFromJson(map['backGroundColor']),
+      shadow: map['shadow'] as double?,
+    );
+  }
+
+  @override
+  String toString() {
+    return 'SubtitleSettingsModel(fontSize: $fontSize, fontWeight: $fontWeight, verticalOffset: $verticalOffset, color: $color, outlineColor: $outlineColor, outlineSize: $outlineSize, backGroundColor: $backGroundColor, shadow: $shadow)';
+  }
+
+  @override
+  bool operator ==(covariant SubtitleSettingsModel other) {
+    if (identical(this, other)) return true;
+
+    return other.fontSize == fontSize &&
+        other.fontWeight == fontWeight &&
+        other.verticalOffset == verticalOffset &&
+        other.color == color &&
+        other.outlineColor == outlineColor &&
+        other.outlineSize == outlineSize &&
+        other.backGroundColor == backGroundColor &&
+        other.shadow == shadow;
+  }
+
+  @override
+  int get hashCode {
+    return fontSize.hashCode ^
+        fontWeight.hashCode ^
+        verticalOffset.hashCode ^
+        color.hashCode ^
+        outlineColor.hashCode ^
+        outlineSize.hashCode ^
+        backGroundColor.hashCode ^
+        shadow.hashCode;
+  }
+}
+
+class SubtitleText extends ConsumerWidget {
+  final SubtitleSettingsModel subModel;
+  final EdgeInsets padding;
+  final String text;
+  final double offset;
+  final String? subtitleLanguage;
+  const SubtitleText({
+    required this.subModel,
+    required this.padding,
+    required this.offset,
+    required this.text,
+    this.subtitleLanguage,
+    super.key,
+  });
+
+  static const kTextScaleFactorReferenceWidth = 1920.0;
+  static const kTextScaleFactorReferenceHeight = 1080.0;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final fillScreen = ref.watch(videoPlayerSettingsProvider.select((value) => value.fillScreen));
+    final fontSize = ref.read(subtitleSettingsProvider.select((value) => value.fontSize));
+    final usePersianFont = SushiSubtitleFont.shouldUsePersianFont(language: subtitleLanguage, text: text);
+    final textDirection = SushiSubtitleFont.textDirectionFor(text, language: subtitleLanguage);
+    final paintedText = SushiSubtitleFont.isolateForPaint(text, textDirection);
+    final fillStyle = usePersianFont
+        ? SushiSubtitleFont.backgroundStyleFor(subModel, usePersianFont: true)
+        : subModel.backGroundStyle;
+    final textStyle = usePersianFont ? SushiSubtitleFont.styleFor(subModel, usePersianFont: true) : subModel.style;
+
+    return Padding(
+      padding: (fillScreen ? EdgeInsets.zero : EdgeInsets.only(left: padding.left, right: padding.right))
+          .add(const EdgeInsets.all(16)),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final textScale = MediaQuery.textScalerOf(context).scale((fontSize *
+              math.sqrt(
+                ((constraints.maxWidth * constraints.maxHeight) /
+                        (kTextScaleFactorReferenceWidth * kTextScaleFactorReferenceHeight))
+                    .clamp(0.0, 1.0),
+              )));
+
+          double getTextHeight(BuildContext context, String value, TextStyle style) {
+            final TextPainter textPainter = TextPainter(
+              text: TextSpan(text: value, style: style),
+              textDirection: textDirection,
+              textScaler: MediaQuery.textScalerOf(context),
+            )..layout(minWidth: 0, maxWidth: double.infinity);
+
+            return textPainter.height;
+          }
+
+          double availableHeight = constraints.maxHeight;
+
+          final double safeAvailableHeight =
+              availableHeight.isFinite ? availableHeight : MediaQuery.of(context).size.height;
+
+          final double desiredPosition = (safeAvailableHeight * offset).clamp(0.0, double.infinity);
+
+          double textHeight = getTextHeight(context, paintedText, textStyle);
+          final double safeTextHeight = textHeight.isFinite ? textHeight : 0.0;
+
+          final double maxPosition = math.max(0.0, safeAvailableHeight - safeTextHeight);
+
+          double position =
+              (desiredPosition - safeTextHeight / 2).isFinite ? (desiredPosition - safeTextHeight / 2) : 0.0;
+
+          position = position.clamp(0.0, maxPosition);
+
+          return Visibility(
+            visible: text.isEmpty ? false : true,
+            child: IgnorePointer(
+              child: Directionality(
+                textDirection: textDirection,
+                child: Stack(
+                  alignment: Alignment.bottomCenter,
+                  children: [
+                    Positioned(
+                      bottom: position,
+                      child: Container(
+                        constraints: BoxConstraints(maxWidth: constraints.maxWidth, maxHeight: constraints.maxHeight),
+                        decoration: BoxDecoration(
+                          color: subModel.backGroundColor,
+                          borderRadius: BorderRadius.circular(clampDouble(textScale / 10, 2, 12)),
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: SushiSubtitleFont.cueBackgroundHorizontalPadding,
+                          ),
+                          child: Text(
+                            paintedText,
+                            style: fillStyle.copyWith(fontSize: textScale),
+                            textAlign: TextAlign.center,
+                            textDirection: textDirection,
+                          ),
+                        ),
+                      ),
+                    ),
+                    Positioned(
+                      bottom: position,
+                      child: Container(
+                        constraints: BoxConstraints(maxWidth: constraints.maxWidth, maxHeight: constraints.maxHeight),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: SushiSubtitleFont.cueBackgroundHorizontalPadding,
+                          ),
+                          child: Text(
+                            paintedText,
+                            style: textStyle.copyWith(fontSize: textScale),
+                            textAlign: TextAlign.center,
+                            textDirection: textDirection,
+                          ),
+                        ),
+                      ),
+                    )
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}

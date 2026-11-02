@@ -1,0 +1,27 @@
+# appimage-builder recipe see https://appimage-builder.readthedocs.io for details
+# CI: tool/ci/build-linux.sh, inside the sushi-flutter-ci image (appimage-builder + AppRun baked in
+# from Gitea packages). No GitHub update channel: Sushi ships through @exampleNewsChannel and the
+# in-app updater, so there is no update-information / .zsync.
+version: 1
+script:
+  - rm -rf AppDir || true
+  - cp -r build/linux/x64/release/bundle AppDir
+  - mkdir -p AppDir/usr/share/icons/
+  - cp icons/production/sushi_icon_desktop.png AppDir/usr/share/icons/
+AppDir:
+  path: ./AppDir
+  app_info:
+    id: app.sushi
+    name: Sushi
+    icon: sushi_icon_desktop
+    version: latest
+    exec: fladder
+    exec_args: $@
+  files:
+    include:
+      - assets/fonts/rubik/Rubik-Italic-VariableFont_wght.ttf
+      - assets/fonts/rubik/Rubik-VariableFont_wght.ttf
+      - icons/production/sushi_icon_desktop.png
+AppImage:
+  arch: x86_64
+  file_name: Sushi_x86_64.AppImage

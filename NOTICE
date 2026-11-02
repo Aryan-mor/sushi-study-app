@@ -1,0 +1,21 @@
+NOTICE
+
+Sushi App is a modified version of Fladder.
+
+  Fladder: https://github.com/DonutWare/Fladder
+  Fladder is licensed under the GNU General Public License version 3.
+
+Modifications by Aryan Moradi, from 2026-08-26 onward, copyright (c) 2026 Aryan Moradi.
+The modifications replace the Jellyfin backend with a Telegram transport and rebrand the app. They
+also include code from oxplayer-client, by the same author. Most of the changes are in lib/sushi/ and
+go/oxtelegram/. This repository was published as a new history, so it does not carry the individual
+Fladder commits. They remain available in the Fladder repository.
+
+The combined work is licensed under the GNU General Public License version 3. See the LICENSE file
+for the full license text. It comes with NO WARRANTY, to the extent permitted by law.
+
+Corresponding source: https://github.com/Aryan-mor/sushi-study-app
+
+Third-party code included in this repository keeps its own license:
+
+  go/oxtelegram/third_party/gotd-td/  MIT License, copyright (c) 2020 Aleksandr Razumov

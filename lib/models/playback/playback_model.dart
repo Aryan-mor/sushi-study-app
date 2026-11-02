@@ -1,0 +1,839 @@
+import 'dart:developer';
+
+import 'package:flutter/material.dart' hide ConnectionState;
+
+import 'package:background_downloader/background_downloader.dart';
+import 'package:chopper/chopper.dart';
+import 'package:collection/collection.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import 'package:fladder/jellyfin/jellyfin_open_api.swagger.dart';
+import 'package:fladder/models/item_base_model.dart';
+import 'package:fladder/models/items/audio_model.dart';
+import 'package:fladder/models/items/channel_model.dart';
+import 'package:fladder/models/items/chapters_model.dart';
+import 'package:fladder/models/items/episode_model.dart';
+import 'package:fladder/models/items/item_shared_models.dart';
+import 'package:fladder/models/items/media_segments_model.dart';
+import 'package:fladder/models/items/media_streams_model.dart';
+import 'package:fladder/models/items/season_model.dart';
+import 'package:fladder/models/items/series_model.dart';
+import 'package:fladder/models/items/trick_play_model.dart';
+import 'package:fladder/models/playback/direct_playback_model.dart';
+import 'package:fladder/models/playback/offline_playback_model.dart';
+import 'package:fladder/models/playback/playback_options_dialogue.dart';
+import 'package:fladder/models/playback/playback_queue_source.dart';
+import 'package:fladder/models/playback/playback_queue_state.dart';
+import 'package:fladder/models/playback/transcode_playback_model.dart';
+import 'package:fladder/models/playback/tv_playback_model.dart';
+export 'playback_queue_source.dart';
+import 'package:fladder/models/settings/video_player_settings.dart';
+import 'package:fladder/models/syncing/sync_item.dart';
+import 'package:fladder/models/video_stream_model.dart';
+import 'package:fladder/sushi/sushi_library_item_ratings.dart';
+import 'package:fladder/sushi/sushi_force_repair_interceptor.dart';
+import 'package:fladder/sushi/sushi_playback_link_cache.dart';
+import 'package:fladder/sushi/sushi_playback_media_source.dart';
+import 'package:fladder/sushi/sushi_playback_telemetry.dart';
+import 'package:fladder/sushi/sushi_provider_bots_bootstrap.dart';
+import 'package:fladder/sushi/sushi_playback_subtitle.dart';
+import 'package:fladder/sushi/sushi_env.dart';
+import 'package:fladder/sushi/sushi_tdlib_bridge_controller.dart' show SushiTdlibBridgeException;
+import 'package:fladder/screens/shared/fladder_notification_overlay.dart';
+import 'package:fladder/sushi/sushi_stream_log.dart';
+import 'package:fladder/sushi/sushi_stream_url_resolver.dart';
+import 'package:fladder/sushi/sushi_tdlib_playback_resolver.dart';
+import 'package:fladder/sushi/sushi_tdlib_session_cache.dart';
+import 'package:fladder/profiles/default_profile.dart';
+import 'package:fladder/providers/api_provider.dart';
+import 'package:fladder/providers/connectivity_provider.dart';
+import 'package:fladder/providers/service_provider.dart';
+import 'package:fladder/providers/settings/video_player_settings_provider.dart';
+import 'package:fladder/providers/sync_provider.dart';
+import 'package:fladder/providers/user_provider.dart';
+import 'package:fladder/providers/video_player_provider.dart';
+import 'package:fladder/util/bitrate_helper.dart';
+import 'package:fladder/util/duration_extensions.dart';
+import 'package:fladder/util/localization_helper.dart';
+import 'package:fladder/util/map_bool_helper.dart';
+import 'package:fladder/util/streams_selection.dart';
+import 'package:fladder/wrappers/media_control_wrapper.dart';
+
+class Media {
+  final String url;
+
+  const Media({
+    required this.url,
+  });
+}
+
+extension PlaybackModelExtension on PlaybackModel? {
+  SubStreamModel? get defaultSubStream {
+    final streams = this?.subStreams;
+    if (streams == null) return null;
+    return streams.firstWhereOrNull((element) => element.index == this?.mediaStreams?.defaultSubStreamIndex) ??
+        SubStreamModel.no();
+  }
+
+  AudioStreamModel? get defaultAudioStream {
+    final streams = this?.audioStreams;
+    if (streams == null) return null;
+    return streams.firstWhereOrNull((element) => element.index == this?.mediaStreams?.defaultAudioStreamIndex) ??
+        AudioStreamModel.no();
+  }
+
+  String? label(BuildContext context) => switch (this) {
+        DirectPlaybackModel _ => PlaybackType.directStream.name(context),
+        TranscodePlaybackModel _ => PlaybackType.transcode.name(context),
+        OfflinePlaybackModel _ => PlaybackType.offline.name(context),
+        TvPlaybackModel _ => PlaybackType.tv.name(context),
+        _ => this?.playerKindLabel(context) ?? context.localized.unknown,
+      };
+}
+
+class PlaybackModel {
+  final ItemBaseModel item;
+  final Media? media;
+  final PlaybackQueueState playbackQueue;
+  List<ItemBaseModel> get queue => playbackQueue.queue;
+  List<ItemBaseModel> get nextUpQueue => playbackQueue.nextUpQueue;
+  final PlaybackQueueSource? queueSource;
+  final MediaSegmentsModel? mediaSegments;
+  final PlaybackInfoResponse? playbackInfo;
+
+  Map<Bitrate, bool> bitRateOptions;
+
+  List<Chapter>? chapters = [];
+  TrickPlayModel? trickPlay;
+
+  Future<PlaybackModel?> updatePlaybackPosition(Duration position, bool isPlaying, Ref ref) =>
+      throw UnimplementedError();
+  Future<PlaybackModel?> playbackStarted(Duration position, Ref ref) => throw UnimplementedError();
+  Future<PlaybackModel?> playbackStopped(Duration position, Duration? totalDuration, Ref ref) =>
+      throw UnimplementedError();
+
+  void dispose() {}
+
+  final MediaStreamsModel? mediaStreams;
+  List<SubStreamModel>? get subStreams => throw UnimplementedError();
+  List<AudioStreamModel>? get audioStreams => throw UnimplementedError();
+
+  bool get isAudioPlayback => item is AudioModel || item.type == FladderItemType.audio;
+
+  Duration resolvedStopPosition(Duration position, Duration? totalDuration) {
+    if (!isAudioPlayback) return position;
+    return totalDuration ?? item.overview.runTime ?? position;
+  }
+
+  Future<Duration> resolvedStartPosition([Duration? requestedStartPosition]) async {
+    if (isAudioPlayback) return Duration.zero;
+    return requestedStartPosition ?? await startDuration() ?? Duration.zero;
+  }
+
+  Future<Duration>? startDuration() async => isAudioPlayback ? Duration.zero : item.userData.playBackPosition;
+
+  /// [SushiPlaybackModel] is direct Telegram play; the extension `_` arm used to show
+  /// localized "unknown" on the bottom-panel chip.
+  String? playerKindLabel(BuildContext context) => null;
+
+  PlaybackModel? updateUserData(UserData userData) => throw UnimplementedError();
+
+  Future<PlaybackModel>? setSubtitle(SubStreamModel? model, MediaControlsWrapper player) => throw UnimplementedError();
+  Future<PlaybackModel>? setAudio(AudioStreamModel? model, MediaControlsWrapper player) => throw UnimplementedError();
+  Future<PlaybackModel>? setQualityOption(Map<Bitrate, bool> map) => throw UnimplementedError();
+
+  PlaybackModel updatePlaybackQueue(PlaybackQueueState newQueue) => throw UnimplementedError();
+
+  ItemBaseModel? get nextVideo => playbackQueue.nextItem(item.id);
+  ItemBaseModel? get previousVideo => playbackQueue.previousItem(item.id);
+
+  PlaybackModel copyWith() => throw UnimplementedError();
+
+  PlaybackModel({
+    required this.playbackInfo,
+    this.mediaStreams,
+    required this.item,
+    required this.media,
+    List<ItemBaseModel> queue = const [],
+    PlaybackQueueState? playbackQueue,
+    this.queueSource,
+    this.bitRateOptions = const {},
+    this.mediaSegments,
+    this.chapters,
+    this.trickPlay,
+  }) : playbackQueue = playbackQueue ??
+            PlaybackQueueState.fromQueue(
+              queue,
+              initialItemId: item.id,
+            );
+}
+
+final playbackModelHelper = Provider<PlaybackModelHelper>((ref) {
+  return PlaybackModelHelper(ref: ref);
+});
+
+class PlaybackModelHelper {
+  const PlaybackModelHelper({required this.ref});
+
+  final Ref ref;
+
+  JellyService get api => ref.read(jellyApiProvider);
+
+  Future<PlaybackModel?> loadNewVideo(ItemBaseModel newItem) async {
+    ref.read(videoPlayerProvider).pause();
+    ref.read(mediaPlaybackProvider.notifier).update((state) => state.copyWith(buffering: true));
+    final currentModel = ref.read(playBackModel);
+    final newModel = (await createPlaybackModel(
+          null,
+          newItem,
+          oldModel: currentModel,
+        )) ??
+        await _createOfflinePlaybackModel(
+          newItem,
+          null,
+          await ref.read(syncProvider.notifier).getSyncedItem(newItem.id),
+          oldModel: currentModel,
+        );
+    if (newModel == null) return null;
+    ref.read(videoPlayerProvider.notifier).loadPlaybackItem(newModel, Duration.zero);
+    return newModel;
+  }
+
+  Future<void> loadTVChannel(ChannelModel? channel) async {
+    if (channel == null) return;
+    ref.read(videoPlayerProvider).pause();
+    ref.read(mediaPlaybackProvider.notifier).update((state) => state.copyWith(buffering: true));
+    final currentModel = ref.read(playBackModel);
+
+    PlaybackModel? serverModel;
+    try {
+      serverModel = await createPlaybackModel(
+        null,
+        channel,
+        forcedPlaybackType: PlaybackType.tv,
+        oldModel: currentModel,
+      ).timeout(const Duration(seconds: 8), onTimeout: () {
+        return null;
+      });
+    } catch (e) {
+      serverModel = null;
+    }
+
+    final newModel = serverModel ??
+        await _createOfflinePlaybackModel(
+          channel,
+          null,
+          await ref.read(syncProvider.notifier).getSyncedItem(channel.id),
+          oldModel: currentModel,
+        );
+
+    if (newModel == null) return;
+    ref.read(videoPlayerProvider.notifier).loadPlaybackItem(newModel, Duration.zero);
+  }
+
+  Future<OfflinePlaybackModel?> _createOfflinePlaybackModel(
+    ItemBaseModel item,
+    MediaStreamsModel? streamModel,
+    SyncedItem? syncedItem, {
+    PlaybackModel? oldModel,
+    PlaybackQueueSource? queueSource,
+  }) async {
+    final ItemBaseModel? syncedItemModel = syncedItem?.itemModel;
+    if (syncedItemModel == null || syncedItem == null || !await syncedItem.videoFile.exists()) return null;
+
+    final children = await ref.read(syncProvider.notifier).getSiblings(syncedItem);
+
+    final syncedItems = children.where((element) => element.videoFile.existsSync()).toList();
+    final itemQueue = syncedItems.map((e) => e.itemModel).nonNulls;
+
+    return OfflinePlaybackModel(
+      item: syncedItemModel,
+      syncedItem: syncedItem,
+      trickPlay: syncedItem.trickPlayModel,
+      mediaSegments: syncedItem.mediaSegments,
+      media: Media(url: syncedItem.videoFile.path),
+      queue: itemQueue.nonNulls.toList(),
+      playbackQueue: oldModel?.playbackQueue,
+      queueSource: queueSource ?? oldModel?.queueSource,
+      syncedQueue: children,
+      mediaStreams: item.streamModel ?? syncedItemModel.streamModel,
+    );
+  }
+
+  Future<PlaybackModel?> createPlaybackModel(
+    BuildContext? context,
+    ItemBaseModel? item, {
+    PlaybackModel? oldModel,
+    List<ItemBaseModel>? libraryQueue,
+    PlaybackQueueSource? queueSource,
+    bool showPlaybackOptions = false,
+    PlaybackType? forcedPlaybackType,
+    Duration? startPosition,
+  }) async {
+    try {
+      if (item == null) return null;
+      final userId = ref.read(userProvider)?.id;
+      if (userId?.isEmpty == true) return null;
+
+      final queue = oldModel?.queue ?? libraryQueue ?? await collectQueue(item);
+      final effectiveQueueSource = oldModel?.queueSource ?? queueSource;
+
+      final firstItemToPlay = switch (item) {
+        SeriesModel _ || SeasonModel _ => (queue.whereType<EpisodeModel>().toList().nextUp),
+        _ => item,
+      };
+
+      if (firstItemToPlay == null) return null;
+
+      final ItemBaseModel? fullItem = SushiEnv.isEnabled
+          ? await sushiFetchFreshItemForPlayback(ref, firstItemToPlay.id)
+          : (await api.usersUserIdItemsItemIdGet(itemId: firstItemToPlay.id)).body;
+
+      if (fullItem == null) {
+        return null;
+      }
+
+      SyncedItem? syncedItem = await ref.read(syncProvider.notifier).getSyncedItem(fullItem.id);
+
+      final firstItemIsSynced = syncedItem != null && syncedItem.status == TaskStatus.complete;
+
+      final actualStartPosition = startPosition ?? fullItem.userData.playBackPosition;
+
+      SushiStreamLog.event('playback_model', fields: {
+        'itemId': firstItemToPlay.id,
+        'resumeTicks': fullItem.userData.playbackPositionTicks,
+        'requestedStart': SushiStreamLog.formatDuration(startPosition),
+        'actualStart': SushiStreamLog.formatDuration(actualStartPosition),
+      });
+
+      final options = {
+        PlaybackType.directStream,
+        PlaybackType.transcode,
+        if (firstItemIsSynced) PlaybackType.offline,
+      };
+
+      final isOffline = ref.read(connectivityStatusProvider.select((value) => value == ConnectionState.offline));
+
+      if (firstItemToPlay is AudioModel && firstItemIsSynced) {
+        final offlinePlayback = await _createOfflinePlaybackModel(
+          fullItem,
+          item.streamModel,
+          syncedItem,
+          oldModel: oldModel,
+          queueSource: effectiveQueueSource,
+        );
+
+        if (offlinePlayback != null) {
+          return offlinePlayback;
+        }
+      }
+
+      if (((showPlaybackOptions || firstItemIsSynced) && !isOffline) && context != null) {
+        final playbackType = await showPlaybackTypeSelection(
+          context: context,
+          options: options,
+        );
+
+        if (!context.mounted) return null;
+
+        return switch (playbackType) {
+          PlaybackType.directStream || PlaybackType.transcode || PlaybackType.tv => await _createServerPlaybackModel(
+              fullItem,
+              item.streamModel,
+              forcedPlaybackType ?? playbackType,
+              oldModel: oldModel,
+              libraryQueue: queue,
+              queueSource: effectiveQueueSource,
+              startPosition: actualStartPosition,
+            ),
+          PlaybackType.offline => await _createOfflinePlaybackModel(
+              fullItem,
+              item.streamModel,
+              syncedItem,
+              oldModel: oldModel,
+              queueSource: effectiveQueueSource,
+            ),
+          null => null
+        };
+      } else {
+        return (await _createServerPlaybackModel(
+              fullItem,
+              item.streamModel,
+              forcedPlaybackType ?? PlaybackType.directStream,
+              startPosition: actualStartPosition,
+              oldModel: oldModel,
+              libraryQueue: queue,
+              queueSource: effectiveQueueSource,
+            )) ??
+            await _createOfflinePlaybackModel(
+              fullItem,
+              item.streamModel,
+              syncedItem,
+              oldModel: oldModel,
+              queueSource: effectiveQueueSource,
+            );
+      }
+    } catch (e, st) {
+      log("Error creating playback model: ${e.toString()}");
+      debugPrint('createPlaybackModel error: $e\n$st');
+      if (e is SushiTdlibBridgeException) {
+        // No BuildContext threaded down this far (some callers pass null) — FladderSnack falls
+        // back to the app-level stored context, same as the "your bot isn't connected" message
+        // startPlaybackSession throws today.
+        FladderSnack.show(e.message, context: context);
+      }
+      return null;
+    }
+  }
+
+  Future<PlaybackModel?> _createServerPlaybackModel(
+    ItemBaseModel item,
+    MediaStreamsModel? streamModel,
+    PlaybackType? type, {
+    PlaybackModel? oldModel,
+    required List<ItemBaseModel> libraryQueue,
+    PlaybackQueueSource? queueSource,
+    Duration? startPosition,
+  }) async {
+    try {
+      final userId = ref.read(userProvider)?.id;
+      if (userId?.isEmpty == true) return null;
+
+      final newStreamModel = streamModel ?? item.streamModel;
+
+      Map<Bitrate, bool> qualityOptions = getVideoQualityOptions(
+        VideoQualitySettings(
+          maxBitRate: ref.read(videoPlayerSettingsProvider.select((value) => value.maxHomeBitrate)),
+          videoBitRate: newStreamModel?.videoStreams.firstOrNull?.bitRate ?? 0,
+          videoCodec: newStreamModel?.videoStreams.firstOrNull?.codec,
+        ),
+      );
+
+      final audioStreamIndex = selectAudioStream(
+          ref.read(userProvider.select((value) => value?.userConfiguration?.rememberAudioSelections ?? true)),
+          oldModel?.mediaStreams?.currentAudioStream,
+          newStreamModel?.audioStreams,
+          newStreamModel?.defaultAudioStreamIndex);
+
+      final rememberSubs = !SushiEnv.isEnabled &&
+          (ref.read(userProvider.select((value) => value?.userConfiguration?.rememberSubtitleSelections ?? true)));
+      final subStreamIndex = sushiResolveSubtitleStreamIndex(
+        selectedIndex: selectSubStream(
+            rememberSubs,
+            oldModel?.mediaStreams?.currentSubStream,
+            newStreamModel?.subStreams,
+            newStreamModel?.defaultSubStreamIndex),
+        serverDefaultIndex: newStreamModel?.defaultSubStreamIndex,
+        subStreams: newStreamModel?.subStreams,
+        mediaSourceName: newStreamModel?.currentVersionStream?.name,
+      );
+
+      //Native player does not allow for loading external subtitles with transcoding
+      final isNativePlayer =
+          ref.read(videoPlayerSettingsProvider.select((value) => value.wantedPlayer == PlayerOptions.nativePlayer));
+      final isExternalSub = newStreamModel?.currentSubStream?.isExternal == true;
+
+      final requestedMediaSourceId = newStreamModel?.currentVersionStream?.id;
+
+      Future<PlaybackInfoResponse?> fetchPlaybackInfo({required bool forceRepair}) async {
+        if (forceRepair) {
+          SushiPlaybackLinkCache.invalidate(requestedMediaSourceId);
+          sushiArmForceRepairPlayback(ref);
+        }
+        final response = await api.itemsItemIdPlaybackInfoPost(
+          itemId: item.id,
+          body: PlaybackInfoDto(
+            startTimeTicks: startPosition?.toRuntimeTicks,
+            audioStreamIndex: audioStreamIndex,
+            subtitleStreamIndex: subStreamIndex,
+            enableTranscoding: true,
+            autoOpenLiveStream: true,
+            deviceProfile: type != PlaybackType.tv ? ref.read(videoProfileProvider) : null,
+            userId: userId,
+            enableDirectPlay: type != PlaybackType.transcode,
+            enableDirectStream: type != PlaybackType.transcode,
+            alwaysBurnInSubtitleWhenTranscoding: isNativePlayer && isExternalSub,
+            maxStreamingBitrate: qualityOptions.enabledFirst.keys.firstOrNull?.bitRate,
+            mediaSourceId: newStreamModel?.currentVersionStream?.id,
+          ),
+        );
+        if (response.body != null && SushiEnv.isEnabled) {
+          SushiPlaybackLinkCache.putFromResponse(response.body);
+        }
+        return response.body;
+      }
+
+      PlaybackInfoResponse? playbackInfo;
+      if (SushiEnv.isEnabled) {
+        await SushiProviderBotsBootstrap.ensureReady();
+        if (requestedMediaSourceId != null) {
+          playbackInfo = SushiPlaybackLinkCache.get(requestedMediaSourceId);
+        }
+        // Do not wait for dashboard prefetch. That path only warms TDLib; play was
+        // stalling after prefetch returned (no startPlaybackSession / playback_url).
+        if (playbackInfo != null) {
+          SushiStreamLog.event('playback_link_cache_hit', fields: {
+            'itemId': item.id,
+            'mediaSourceId': requestedMediaSourceId,
+          });
+        } else {
+          SushiStreamLog.event('playback_link_cache_miss', fields: {
+            'itemId': item.id,
+            'mediaSourceId': requestedMediaSourceId,
+          });
+        }
+      }
+      playbackInfo ??= await fetchPlaybackInfo(forceRepair: false);
+      if (playbackInfo == null) {
+        SushiStreamLog.event('playback_info_null', fields: {'itemId': item.id});
+        await SushiPlaybackTelemetry.reportFailure(
+          stage: 'playback_info',
+          reason: 'null_response',
+          itemId: item.id,
+        );
+        return null;
+      }
+
+      var mediaSource = sushiResolvePlaybackMediaSource(
+        playbackInfo,
+        requestedMediaSourceId: requestedMediaSourceId,
+      );
+
+      if (mediaSource == null) {
+        return null;
+      }
+
+      var mediaPath = isValidVideoUrl(mediaSource.path ?? "");
+      SushiStreamLog.event('playback_media_path', fields: {
+        'itemId': item.id,
+        'path': SushiStreamLog.describeUrl(mediaPath),
+        'supportsDirectPlay': mediaSource.supportsDirectPlay,
+        'supportsDirectStream': mediaSource.supportsDirectStream,
+      });
+      String? resolvedMediaPath;
+      if (mediaPath != null && SushiEnv.isEnabled) {
+        try {
+          resolvedMediaPath = await sushiResolveStreamPlaybackUrl(ref.read, mediaPath);
+        } catch (e) {
+          // The public Telegram pool purges daily; a link can go dead between hydrate and this
+          // play attempt. Force-repair sends a brand new copyMessage and retry once, silently,
+          // rather than surfacing an error — see sushiIsTdlibFileMissingError.
+          //
+          // sushiIsTelegramDeliveryWaitTimeoutError covers a different dead end that needs the
+          // same fix: the server marks a delivery "sent" the moment Telegram accepts the copy and
+          // will not re-copy while that sender stays healthy, but the only way the client can ever
+          // learn the resulting message id is a live push at the moment of copy — there is no
+          // fallback scan for it (bot-mode readers can't enumerate DM history at all;
+          // findLocatorInRecentMessages is a no-op for them, see resolve.go). Miss that one push —
+          // background/lock-screen delay, cold start, anything — and every future play of the same
+          // file waits the full 20s for a push the server will never send again, forever, with no
+          // self-heal. force-repair is the only thing that unsticks it: it deletes the stale
+          // pending row server-side and sends a fresh copyMessage, producing a NEW push this
+          // attempt is actively listening for. Confirmed against production logs (oxp_18941):
+          // "delivery copy already sent — awaiting report" on every attempt, sender healthy,
+          // provider_bot_id unchanged, message_id never gets past 0.
+          final isDeliveryTimeout = sushiIsTelegramDeliveryWaitTimeoutError(e);
+          if (!sushiIsTelegramProviderLink(mediaPath) ||
+              !(sushiIsTdlibFileMissingError(e) || isDeliveryTimeout)) {
+            rethrow;
+          }
+          debugPrint(
+            '$sushiplayTdlibLogTag: resolve failed ($e) for itemId=${item.id} — refetch retry',
+          );
+          SushiTdlibSessionCache.invalidateTelegramUrl(mediaPath);
+          SushiPlaybackLinkCache.invalidate(requestedMediaSourceId);
+          final repairedInfo = await fetchPlaybackInfo(forceRepair: true);
+          final repairedSource = repairedInfo == null
+              ? null
+              : sushiResolvePlaybackMediaSource(repairedInfo, requestedMediaSourceId: requestedMediaSourceId);
+          final repairedPath = isValidVideoUrl(repairedSource?.path ?? "");
+          if (repairedInfo == null || repairedSource == null || repairedPath == null) {
+            debugPrint('$sushiplayTdlibLogTag: force-repair produced no usable media source, giving up');
+            return null;
+          }
+          resolvedMediaPath = await sushiResolveStreamPlaybackUrl(
+            ref.read,
+            repairedPath,
+            forceRefreshNodes: true,
+          );
+          debugPrint('$sushiplayTdlibLogTag: force-repair retry succeeded');
+          playbackInfo = repairedInfo;
+          mediaSource = repairedSource;
+          mediaPath = repairedPath;
+        }
+      } else {
+        resolvedMediaPath = mediaPath;
+      }
+
+      final resolvedVersionIndex = playbackInfo.mediaSources?.indexWhere((s) => s.id == mediaSource!.id) ?? -1;
+      final mediaStreamsWithUrls = MediaStreamsModel.fromMediaStreamsList(playbackInfo.mediaSources, ref).copyWith(
+        versionStreamIndex: resolvedVersionIndex >= 0 ? resolvedVersionIndex : newStreamModel?.versionStreamIndex,
+        defaultAudioStreamIndex: audioStreamIndex,
+        defaultSubStreamIndex: subStreamIndex,
+      );
+
+      final isTelegram = sushiIsTelegramProviderLink(mediaPath);
+      final mediaSegments = isTelegram ? null : await api.mediaSegmentsGet(id: item.id);
+      final trickPlayResp = isTelegram ? null : await api.getTrickPlay(item: item, ref: ref);
+
+      final trickPlay = trickPlayResp?.body;
+      final chapters = item.overview.chapters ?? [];
+
+      if (type == PlaybackType.tv && resolvedMediaPath != null) {
+        SushiStreamLog.event('playback_url', fields: {
+          'itemId': item.id,
+          'apiMediaPath': SushiStreamLog.describeUrl(mediaPath),
+          'resolvedUrl': SushiStreamLog.describeUrl(resolvedMediaPath),
+          'startPosition': SushiStreamLog.formatDuration(startPosition),
+          'startTimeTicks': startPosition?.toRuntimeTicks,
+          'model': 'tv',
+        });
+        final tvModel = TvPlaybackModel(
+          channel: item as ChannelModel,
+          isNativePlayerBackend: isNativePlayer,
+          item: item,
+          queue: libraryQueue,
+          playbackQueue: oldModel?.playbackQueue,
+          queueSource: queueSource,
+          playbackInfo: playbackInfo,
+          media: Media(url: resolvedMediaPath),
+        );
+        tvModel.startTracking(ref);
+        return tvModel;
+      }
+
+      if ((mediaSource.supportsDirectStream ?? false) || (mediaSource.supportsDirectPlay ?? false)) {
+        final Map<String, String?> directOptions = {
+          'Static': 'true',
+          'mediaSourceId': mediaSource.id,
+          'api_key': ref.read(userProvider)?.credentials.token,
+        };
+
+        if (mediaSource.eTag != null) {
+          directOptions['Tag'] = mediaSource.eTag;
+        }
+
+        if (mediaSource.liveStreamId != null) {
+          directOptions['LiveStreamId'] = mediaSource.liveStreamId;
+        }
+
+        final playbackUrl = buildServerUrl(
+          ref,
+          pathSegments: ['Videos', mediaSource.id!, 'stream'],
+          queryParameters: directOptions,
+        );
+
+        SushiStreamLog.event('playback_url', fields: {
+          'itemId': item.id,
+          'apiMediaPath': SushiStreamLog.describeUrl(mediaPath),
+          'resolvedUrl': SushiStreamLog.describeUrl(resolvedMediaPath),
+          'startPosition': SushiStreamLog.formatDuration(startPosition),
+          'startTimeTicks': startPosition?.toRuntimeTicks,
+          'model': 'direct',
+        });
+
+        return DirectPlaybackModel(
+          item: item,
+          queue: libraryQueue,
+          playbackQueue: oldModel?.playbackQueue,
+          queueSource: queueSource,
+          mediaSegments: mediaSegments?.body,
+          chapters: chapters,
+          playbackInfo: playbackInfo,
+          trickPlay: trickPlay,
+          media: Media(url: resolvedMediaPath ?? playbackUrl),
+          mediaStreams: mediaStreamsWithUrls,
+          bitRateOptions: qualityOptions,
+        );
+      } else if ((mediaSource.supportsTranscoding ?? false) && mediaSource.transcodingUrl != null) {
+        SushiStreamLog.event('playback_url', fields: {
+          'itemId': item.id,
+          'apiMediaPath': SushiStreamLog.describeUrl(mediaPath),
+          'resolvedUrl': SushiStreamLog.describeUrl(resolvedMediaPath),
+          'startPosition': SushiStreamLog.formatDuration(startPosition),
+          'startTimeTicks': startPosition?.toRuntimeTicks,
+          'model': 'transcode',
+        });
+        return TranscodePlaybackModel(
+          item: item,
+          queue: libraryQueue,
+          playbackQueue: oldModel?.playbackQueue,
+          queueSource: queueSource,
+          mediaSegments: mediaSegments?.body,
+          chapters: chapters,
+          trickPlay: trickPlay,
+          playbackInfo: playbackInfo,
+          media: Media(url: buildServerUrl(ref, relativeUrl: mediaSource.transcodingUrl)),
+          mediaStreams: mediaStreamsWithUrls,
+          bitRateOptions: qualityOptions,
+        );
+      }
+      return null;
+    } catch (e, st) {
+      log(e.toString());
+      debugPrint('_createServerPlaybackModel error: $e\n$st');
+      await SushiPlaybackTelemetry.reportException(
+        stage: 'create_server_playback_model',
+        exception: e,
+        stackTrace: st,
+        itemId: item.id,
+      );
+      return null;
+    }
+  }
+
+  String? isValidVideoUrl(String path) {
+    Uri? uri = Uri.tryParse(path);
+    return (uri != null && uri.hasScheme && uri.hasAuthority) ? path : null;
+  }
+
+  Future<List<ItemBaseModel>> collectQueue(ItemBaseModel model) async {
+    switch (model) {
+      case EpisodeModel _:
+      case SeriesModel _:
+      case SeasonModel _:
+        List<EpisodeModel> episodeList = ((await fetchEpisodesFromSeries(model.streamId)).body ?? [])
+          ..removeWhere((element) => element.status != EpisodeStatus.available);
+        return episodeList;
+      default:
+        return [];
+    }
+  }
+
+  Future<Response<List<EpisodeModel>>> fetchEpisodesFromSeries(String seriesId) async {
+    final response = await api.showsSeriesIdEpisodesGet(
+      seriesId: seriesId,
+      fields: [
+        ItemFields.overview,
+        ItemFields.originaltitle,
+        ItemFields.mediastreams,
+        ItemFields.mediasources,
+        ItemFields.mediasourcecount,
+        ItemFields.width,
+        ItemFields.height,
+      ],
+    );
+    return Response(response.base, (response.body?.items?.map((e) => EpisodeModel.fromBaseDto(e, ref)).toList() ?? []));
+  }
+
+  Future<void> shouldReload(PlaybackModel playbackModel) async {
+    if (playbackModel is OfflinePlaybackModel) {
+      return;
+    }
+
+    final item = playbackModel.item;
+
+    final userId = ref.read(userProvider)?.id;
+    if (userId?.isEmpty == true) return;
+
+    final currentPosition = ref.read(mediaPlaybackProvider.select((value) => value.position));
+
+    final audioIndex = selectAudioStream(
+        ref.read(userProvider.select((value) => value?.userConfiguration?.rememberAudioSelections ?? true)),
+        playbackModel.mediaStreams?.currentAudioStream,
+        playbackModel.audioStreams,
+        playbackModel.mediaStreams?.defaultAudioStreamIndex);
+    final rememberSubs = !SushiEnv.isEnabled &&
+        (ref.read(userProvider.select((value) => value?.userConfiguration?.rememberSubtitleSelections ?? true)));
+    final subIndex = selectSubStream(
+        rememberSubs,
+        playbackModel.mediaStreams?.currentSubStream,
+        playbackModel.subStreams,
+        playbackModel.mediaStreams?.defaultSubStreamIndex);
+
+    Response<PlaybackInfoResponse> response = await api.itemsItemIdPlaybackInfoPost(
+      itemId: item.id,
+      body: PlaybackInfoDto(
+        startTimeTicks: currentPosition.toRuntimeTicks,
+        audioStreamIndex: audioIndex,
+        enableDirectPlay: true,
+        enableDirectStream: true,
+        subtitleStreamIndex: subIndex,
+        enableTranscoding: true,
+        autoOpenLiveStream: true,
+        deviceProfile: ref.read(videoProfileProvider),
+        userId: userId,
+        maxStreamingBitrate: playbackModel.bitRateOptions.enabledFirst.entries.firstOrNull?.key.bitRate,
+        mediaSourceId: playbackModel.mediaStreams?.currentVersionStream?.id,
+      ),
+    );
+
+    PlaybackInfoResponse playbackInfo = response.bodyOrThrow;
+
+    final mediaSource = sushiResolvePlaybackMediaSource(
+      playbackInfo,
+      requestedMediaSourceId: playbackModel.mediaStreams?.currentVersionStream?.id,
+    );
+
+    final mediaStreamsWithUrls = MediaStreamsModel.fromMediaStreamsList(playbackInfo.mediaSources, ref).copyWith(
+      versionStreamIndex: playbackModel.mediaStreams?.versionStreamIndex,
+      defaultAudioStreamIndex: audioIndex,
+      defaultSubStreamIndex: subIndex,
+    );
+
+    if (mediaSource == null) return;
+
+    PlaybackModel? newModel;
+
+    if ((mediaSource.supportsDirectStream ?? false) || (mediaSource.supportsDirectPlay ?? false)) {
+      final Map<String, String?> directOptions = {
+        'Static': 'true',
+        'mediaSourceId': mediaSource.id,
+        'api_key': ref.read(userProvider)?.credentials.token,
+      };
+
+      if (mediaSource.eTag != null) {
+        directOptions['Tag'] = mediaSource.eTag;
+      }
+
+      if (mediaSource.liveStreamId != null) {
+        directOptions['LiveStreamId'] = mediaSource.liveStreamId;
+      }
+
+      final directPlay = buildServerUrl(
+        ref,
+        pathSegments: ['Videos', mediaSource.id ?? '', 'stream'],
+        queryParameters: directOptions,
+      );
+
+      final mediaPath = isValidVideoUrl(mediaSource.path ?? "");
+      final resolvedMediaPath = mediaPath != null && SushiEnv.isEnabled
+          ? await sushiResolveStreamPlaybackUrl(ref.read, mediaPath)
+          : mediaPath;
+
+      newModel = DirectPlaybackModel(
+        item: playbackModel.item,
+        queue: playbackModel.queue,
+        playbackQueue: playbackModel.playbackQueue,
+        mediaSegments: playbackModel.mediaSegments,
+        chapters: playbackModel.chapters,
+        playbackInfo: playbackInfo,
+        trickPlay: playbackModel.trickPlay,
+        media: Media(url: resolvedMediaPath ?? directPlay),
+        mediaStreams: mediaStreamsWithUrls,
+        bitRateOptions: playbackModel.bitRateOptions,
+      );
+    } else if ((mediaSource.supportsTranscoding ?? false) && mediaSource.transcodingUrl != null) {
+      newModel = TranscodePlaybackModel(
+        item: playbackModel.item,
+        queue: playbackModel.queue,
+        playbackQueue: playbackModel.playbackQueue,
+        mediaSegments: playbackModel.mediaSegments,
+        chapters: playbackModel.chapters,
+        playbackInfo: playbackInfo,
+        trickPlay: playbackModel.trickPlay,
+        media: Media(url: buildServerUrl(ref, relativeUrl: mediaSource.transcodingUrl)),
+        mediaStreams: mediaStreamsWithUrls,
+        bitRateOptions: playbackModel.bitRateOptions,
+      );
+    }
+    if (newModel == null) return;
+    if (newModel.runtimeType != playbackModel.runtimeType || newModel is TranscodePlaybackModel) {
+      ref.read(videoPlayerProvider.notifier).loadPlaybackItem(
+            newModel,
+            currentPosition,
+            preserveSelection: true,
+          );
+    }
+  }
+}

@@ -1,0 +1,202 @@
+import 'dart:io';
+
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+import 'package:collection/collection.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:screen_brightness/screen_brightness.dart';
+import 'package:volume_controller/volume_controller.dart';
+
+import 'package:fladder/models/settings/key_combinations.dart';
+import 'package:fladder/models/settings/video_player_settings.dart';
+import 'package:fladder/providers/shared_provider.dart';
+import 'package:fladder/providers/video_player_provider.dart';
+
+final videoPlayerSettingsProvider =
+    StateNotifierProvider<VideoPlayerSettingsProviderNotifier, VideoPlayerSettingsModel>((ref) {
+  return VideoPlayerSettingsProviderNotifier(ref);
+});
+
+final playbackRateProvider = StateProvider<double>((ref) => 1.0);
+
+class VideoPlayerSettingsProviderNotifier extends StateNotifier<VideoPlayerSettingsModel> {
+  VideoPlayerSettingsProviderNotifier(this.ref) : super(_sanitizeCrossfade(VideoPlayerSettingsModel())) {
+    _initVolumeSync();
+  }
+
+  final Ref ref;
+
+  void _initVolumeSync() async {
+    // Initialize volume from system volume on mobile/supported platforms
+    if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+      VolumeController.instance.showSystemUI = false;
+      final initialVolume = await VolumeController.instance.getVolume();
+      state = state.copyWith(internalVolume: initialVolume * 100);
+
+      VolumeController.instance.addListener((volume) {
+        // Update both the model and the player when system volume changes (hardware buttons)
+        final newVolume = volume * 100;
+        if ((state.internalVolume - newVolume).abs() > 0.1) {
+          state = state.copyWith(internalVolume: newVolume);
+          ref.read(videoPlayerProvider).setVolume(newVolume);
+        }
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+      VolumeController.instance.removeListener();
+    }
+    super.dispose();
+  }
+
+  @override
+  set state(VideoPlayerSettingsModel value) {
+    value = _sanitizeCrossfade(value);
+    final oldState = super.state;
+    super.state = value;
+    ref.read(sharedUtilityProvider).videoPlayerSettings = value;
+    if (!oldState.playerSame(value)) {
+      ref.read(videoPlayerProvider.notifier).init();
+    }
+  }
+
+  void setScreenBrightness(double? value) async {
+    state = state.copyWith(
+      screenBrightness: value,
+    );
+    if (state.screenBrightness != null) {
+      ScreenBrightness().setApplicationScreenBrightness(state.screenBrightness!);
+    } else {
+      ScreenBrightness().resetApplicationScreenBrightness();
+    }
+  }
+
+  void setSavedBrightness() {
+    if (state.screenBrightness != null) {
+      ScreenBrightness().setApplicationScreenBrightness(state.screenBrightness!);
+    }
+  }
+
+  void setFillScreen(bool? value, {BuildContext? context}) {
+    state = state.copyWith(fillScreen: value ?? false);
+  }
+
+  void setHardwareAccel(bool? value) => state = state.copyWith(hardwareAccel: value ?? true);
+  void setUseLibass(bool? value) => state = state.copyWith(useLibass: value ?? false);
+  void setMediaTunneling(bool? value) => state = state.copyWith(enableTunneling: value ?? false);
+  void setBufferSize(int? value) => state = state.copyWith(bufferSize: value ?? 128);
+  void setFitType(BoxFit? value) => state = state.copyWith(videoFit: value ?? BoxFit.contain);
+  void setScreensaver(Screensaver? value) => state = state.copyWith(screensaver: value ?? Screensaver.black);
+
+  void setVolume(double value) {
+    state = state.copyWith(internalVolume: value);
+    ref.read(videoPlayerProvider).setVolume(value);
+    if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+      VolumeController.instance.setVolume(value / 100);
+    }
+  }
+
+  void steppedVolume(int i) {
+    final value = (state.volume + i).clamp(0, 100).toDouble();
+    state = state.copyWith(internalVolume: value);
+    ref.read(videoPlayerProvider).setVolume(value);
+    if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+      VolumeController.instance.setVolume(value / 100);
+    }
+  }
+
+  void steppedSpeed(double i) {
+    var value = double.parse(
+      ((ref.read(playbackRateProvider) + i).clamp(0.25, 3)).toStringAsFixed(2),
+    );
+
+    if ((value - 1.0).abs() <= 0.06) {
+      value = 1.0;
+    }
+
+    ref.read(playbackRateProvider.notifier).state = value;
+    ref.read(videoPlayerProvider).setSpeed(value);
+  }
+
+  void toggleOrientation(Set<DeviceOrientation>? orientation) =>
+      state = state.copyWith(allowedOrientations: orientation);
+
+  void setShortcuts(MapEntry<VideoHotKeys, KeyCombination> newEntry) {
+    state = state.copyWith(hotKeys: state.hotKeys.setOrRemove(newEntry, state.defaultShortCuts));
+  }
+
+  void nextChapter() {
+    final chapters = ref.read(playBackModel)?.chapters ?? [];
+    final currentPosition = ref.read(videoPlayerProvider.select((value) => value.lastState?.position));
+
+    if (chapters.isNotEmpty && currentPosition != null) {
+      final currentChapter = chapters.lastWhereOrNull((element) => element.startPosition <= currentPosition);
+
+      if (currentChapter != null) {
+        final nextChapterIndex = chapters.indexOf(currentChapter) + 1;
+        if (nextChapterIndex < chapters.length) {
+          ref.read(videoPlayerProvider).seek(chapters[nextChapterIndex].startPosition);
+        } else {
+          ref.read(videoPlayerProvider).seek(currentChapter.startPosition);
+        }
+      }
+    }
+  }
+
+  void prevChapter() {
+    final chapters = ref.read(playBackModel)?.chapters ?? [];
+    final currentPosition = ref.read(videoPlayerProvider.select((value) => value.lastState?.position));
+
+    if (chapters.isNotEmpty && currentPosition != null) {
+      final currentChapter = chapters.lastWhereOrNull((element) => element.startPosition <= currentPosition);
+
+      if (currentChapter != null) {
+        final prevChapterIndex = chapters.indexOf(currentChapter) - 1;
+        if (prevChapterIndex >= 0) {
+          ref.read(videoPlayerProvider).seek(chapters[prevChapterIndex].startPosition);
+        } else {
+          ref.read(videoPlayerProvider).seek(currentChapter.startPosition);
+        }
+      }
+    }
+  }
+
+  void setEnableSpeedBoost(bool value) => state = state.copyWith(enableSpeedBoost: value);
+
+  void setSpeedBoostRate(double value) {
+    final clampedValue = value.clamp(0.25, 3.0);
+    state = state.copyWith(speedBoostRate: clampedValue);
+  }
+
+  void setEnableDoubleTapSeek(bool value) => state = state.copyWith(enableDoubleTapSeek: value);
+
+  void setEnableAdvancedVideoOptions(bool value) => state = state.copyWith(enableAdvancedVideoOptions: value);
+
+  void setEnableEdgeGestures(bool value) => state = state.copyWith(enableEdgeGestures: value);
+
+  void setReverseEdgeGestures(bool value) => state = state.copyWith(reverseEdgeGestures: value);
+
+  void setEnableReplayGain(bool value) => state = state.copyWith(enableReplayGain: value);
+
+  void setEnablePlayPauseFade(bool value) => state = state.copyWith(enablePlayPauseFade: value);
+
+  void setReplayGainVolumeLevel(ReplayGainVolumeLevel value) => state = state.copyWith(replayGainVolumeLevel: value);
+
+  void setEnableCrossfade(bool value) {
+    state = state.copyWith(enableCrossfade: value && state.canUseCrossfade);
+  }
+
+  void setCrossfadeDurationMs(int value) => state = state.copyWith(crossfadeDurationMs: value);
+
+  static VideoPlayerSettingsModel _sanitizeCrossfade(VideoPlayerSettingsModel value) {
+    if (!value.canUseCrossfade && value.enableCrossfade) {
+      return value.copyWith(enableCrossfade: false);
+    }
+    return value;
+  }
+}

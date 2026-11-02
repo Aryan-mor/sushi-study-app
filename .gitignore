@@ -1,0 +1,139 @@
+# Miscellaneous
+*ci-keystore-secrets-temp*
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+.atom/
+.build/
+.dmg_temp/
+.buildlog/
+.history
+.svn/
+migrate_working_dir/
+
+# IntelliJ related
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# The .vscode folder contains launch configuration and tasks you configure in
+# VS Code which you may wish to be included in version control, so this line
+# is commented out by default.
+#.vscode/
+
+# Flutter/Dart/Pub related
+**/doc/api/
+**/ios/Flutter/.last_build_id
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+/build/
+
+# Symbolication related
+app.*.symbols
+
+# Obfuscation related
+app.*.map.json
+
+# Android Studio will place build artifacts here
+/android/app/debug
+/android/app/profile
+/android/app/release
+**/android/**/gradle-wrapper.jar
+.gradle/
+**/android/captures/
+**/android/gradlew
+**/android/gradlew.bat
+**/android/**/GeneratedPluginRegistrant.java
+**/android/key.properties
+*.jks
+local.properties
+**/.cxx/
+
+# FVM Version Cache
+.fvm/
+
+# AppImage
+/AppDir/
+/AppDirassets/
+/AppDiricons/
+/appimage-build/
+*.AppImage
+*.AppImage.zsync
+
+# flatpak
+.flatpak-builder
+
+# Affinity lock
+*.afdesign~lock~
+*.afphoto~lock~
+
+# Inno Setup builds
+Output
+
+# Generated localizations
+lib/l10n/generated
+l10n_untranslated.json
+android/build/reports/problems/
+assets/env/default.env
+dart_defines.ngrok.json
+dart_defines.dev.json
+dart_defines.prod.json
+
+# Firebase Admin SDK service account (Infisical CONSOLE_FIREBASE only)
+*firebase-adminsdk*.json
+**/oxplayer-*-firebase-adminsdk-*.json
+
+# Cursor — local-only agent rules
+.cursor/rules/*.local.mdc
+
+node_modules/
+
+# Legacy TDLib Dart codegen (app no longer uses TDLib; ignore local leftovers)
+lib/td_api_generated/
+android/.kotlin/*
+
+# graphify - local knowledge graph output (never commit)
+**/graphify-out/**
+**/.graphify/**
+
+# Local Go probe leftovers (never commit)
+go/oxtelegram/botprobe.exe
+go/oxtelegram/botprobe.session
+go/oxtelegram/cshared/cshared.exe
+go/oxtelegram/*.session
+
+# Extra local/build leftovers (sushi fork)
+windows/flutter/ephemeral/
+linux/flutter/ephemeral/
+macos/Flutter/ephemeral/
+ios/Flutter/ephemeral/
+**/Pods/
+.release-out.log
+custom_lint.log
+
+# Local UI-inspection scratch dumps (adb screencap / uiautomator)
+.tmp-*
+
+# CI (tool/ci)
+/.ci-cache/
+/dist/
+/tool/ci/docker/vendor/
+/windows/Output/
+
+# local screenshots
+.cursor-sushi-phone*
+
+# Native libraries are built from go/oxtelegram, never committed.
+*.aar
+*-sources.jar
+*.so
+*.dll
+*.exe
+dart_defines*.json

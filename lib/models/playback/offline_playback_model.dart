@@ -1,0 +1,161 @@
+import 'package:flutter/widgets.dart';
+
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import 'package:fladder/models/item_base_model.dart';
+import 'package:fladder/models/items/chapters_model.dart';
+import 'package:fladder/models/items/item_shared_models.dart';
+import 'package:fladder/models/items/media_segments_model.dart';
+import 'package:fladder/models/items/media_streams_model.dart';
+import 'package:fladder/models/items/trick_play_model.dart';
+import 'package:fladder/models/playback/playback_model.dart';
+import 'package:fladder/models/playback/playback_queue_state.dart';
+import 'package:fladder/models/syncing/sync_item.dart';
+import 'package:fladder/providers/incognito_mode_provider.dart';
+import 'package:fladder/providers/sync_provider.dart';
+import 'package:fladder/util/duration_extensions.dart';
+import 'package:fladder/util/list_extensions.dart';
+import 'package:fladder/wrappers/media_control_wrapper.dart';
+
+class OfflinePlaybackModel extends PlaybackModel {
+  OfflinePlaybackModel({
+    required this.syncedItem,
+    super.mediaStreams,
+    super.playbackInfo,
+    required super.item,
+    required super.media,
+    super.mediaSegments,
+    super.trickPlay,
+    super.queue = const [],
+    super.playbackQueue,
+    super.queueSource,
+    this.syncedQueue = const [],
+  });
+
+  final SyncedItem syncedItem;
+  final List<SyncedItem> syncedQueue;
+
+  @override
+  List<Chapter>? get chapters => syncedItem.chapters;
+
+  @override
+  Future<Duration>? startDuration() async => isAudioPlayback ? Duration.zero : item.userData.playBackPosition;
+
+  @override
+  ItemBaseModel? get nextVideo => queue.nextOrNull(item);
+
+  @override
+  ItemBaseModel? get previousVideo => queue.previousOrNull(item);
+
+  @override
+  List<SubStreamModel> get subStreams => [SubStreamModel.no(), ...syncedItem.subtitles];
+
+  @override
+  Future<OfflinePlaybackModel> setSubtitle(SubStreamModel? model, MediaControlsWrapper player) async {
+    final newIndex = await player.setSubtitleTrack(model, this);
+    return copyWith(mediaStreams: () => mediaStreams?.copyWith(defaultSubStreamIndex: newIndex));
+  }
+
+  @override
+  List<AudioStreamModel> get audioStreams => [AudioStreamModel.no(), ...mediaStreams?.audioStreams ?? []];
+
+  @override
+  Future<OfflinePlaybackModel>? setAudio(AudioStreamModel? model, MediaControlsWrapper player) async {
+    final newIndex = await player.setAudioTrack(model, this);
+    return copyWith(mediaStreams: () => mediaStreams?.copyWith(defaultAudioStreamIndex: newIndex));
+  }
+
+  @override
+  Future<PlaybackModel?> playbackStarted(Duration position, Ref ref) async {
+    return null;
+  }
+
+  @override
+  Future<PlaybackModel?> playbackStopped(Duration position, Duration? totalDuration, Ref ref) async {
+    if (ref.read(incognitoModeProvider) == true) return null;
+    final effectiveDuration = totalDuration ?? item.overview.runTime ?? Duration.zero;
+    final effectivePosition = resolvedStopPosition(position, totalDuration);
+    final progress = _progressFor(effectivePosition, effectiveDuration);
+    final isPlayed = UserData.isPlayed(effectivePosition, effectiveDuration);
+    final userData = syncedItem.userData?.copyWith(
+      playbackPositionTicks: isPlayed != false ? 0 : effectivePosition.toRuntimeTicks,
+      progress: isPlayed != false ? 0.0 : progress,
+      played: isPlayed,
+      lastPlayed: DateTime.now().toUtc(),
+    );
+    final newItem = syncedItem.copyWith(
+      userData: userData,
+    );
+    await ref.read(syncProvider.notifier).updateItem(newItem);
+    return null;
+  }
+
+  @override
+  Future<PlaybackModel?> updatePlaybackPosition(Duration position, bool isPlaying, Ref ref) async {
+    if (ref.read(incognitoModeProvider) == true) return null;
+    final effectiveDuration = item.overview.runTime ?? Duration.zero;
+    final progress = _progressFor(position, effectiveDuration);
+    final isPlayed = UserData.isPlayed(position, effectiveDuration);
+    final userData = syncedItem.userData?.copyWith(
+      playbackPositionTicks: isPlayed != false ? 0 : position.toRuntimeTicks,
+      progress: isPlayed != false ? 0.0 : progress,
+      played: isPlayed,
+      lastPlayed: DateTime.now().toUtc(),
+    );
+    final newItem = syncedItem.copyWith(
+      userData: userData,
+    );
+    await ref.read(syncProvider.notifier).updateItem(newItem);
+    return null;
+  }
+
+  double _progressFor(Duration position, Duration totalDuration) {
+    if (totalDuration.inMilliseconds <= 0) return 0;
+    final progress = position.inMilliseconds / totalDuration.inMilliseconds * 100;
+    return progress.clamp(0.0, 100.0).toDouble();
+  }
+
+  @override
+  OfflinePlaybackModel? updateUserData(UserData userData) {
+    return copyWith(
+      item: item.copyWith(
+        userData: userData,
+      ),
+    );
+  }
+
+  @override
+  OfflinePlaybackModel updatePlaybackQueue(PlaybackQueueState newQueue) {
+    return copyWith(playbackQueue: newQueue);
+  }
+
+  @override
+  String toString() => 'OfflinePlaybackModel(item: $item, syncedItem: $syncedItem)';
+
+  @override
+  OfflinePlaybackModel copyWith({
+    ItemBaseModel? item,
+    ValueGetter<Media?>? media,
+    SyncedItem? syncedItem,
+    ValueGetter<MediaStreamsModel?>? mediaStreams,
+    ValueGetter<MediaSegmentsModel?>? mediaSegments,
+    ValueGetter<TrickPlayModel?>? trickPlay,
+    List<ItemBaseModel>? queue,
+    PlaybackQueueState? playbackQueue,
+    PlaybackQueueSource? queueSource,
+    List<SyncedItem>? syncedQueue,
+  }) {
+    return OfflinePlaybackModel(
+      item: item ?? this.item,
+      media: media != null ? media() : this.media,
+      syncedItem: syncedItem ?? this.syncedItem,
+      mediaStreams: mediaStreams != null ? mediaStreams() : this.mediaStreams,
+      mediaSegments: mediaSegments != null ? mediaSegments() : this.mediaSegments,
+      trickPlay: trickPlay != null ? trickPlay() : this.trickPlay,
+      queue: queue ?? this.queue,
+      playbackQueue: playbackQueue ?? this.playbackQueue,
+      queueSource: queueSource ?? this.queueSource,
+      syncedQueue: syncedQueue ?? this.syncedQueue,
+    );
+  }
+}

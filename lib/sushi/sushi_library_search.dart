@@ -1,0 +1,72 @@
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import 'package:fladder/jellyfin/jellyfin_open_api.swagger.dart';
+import 'package:fladder/models/collection_types.dart';
+import 'package:fladder/models/library_search/library_search_model.dart';
+import 'package:fladder/models/view_model.dart';
+import 'package:fladder/providers/views_provider.dart';
+import 'package:fladder/util/map_bool_helper.dart';
+
+/// OX: smaller first page for library grid browse (poster cards refetch detail on open).
+const sushiLibrarySearchInitialPageSize = 48;
+
+/// OX: defer filter metadata until user opens filter UI.
+bool sushiLibrarySearchDeferFilters(LibrarySearchModel state) {
+  
+  if (state.searchQuery.isNotEmpty) return false;
+  final filters = state.filters;
+  // hideEmptyShows defaults true — not a user-applied filter; must not block defer.
+  return !(filters.genres.hasEnabled ||
+      filters.studios.hasEnabled ||
+      filters.tags.hasEnabled ||
+      filters.years.hasEnabled ||
+      filters.officialRatings.hasEnabled ||
+      filters.itemFilters.hasEnabled ||
+      filters.recursive == false ||
+      filters.favourites == true);
+}
+
+int sushiLibrarySearchPageSize(int configuredSize) {
+  
+  if (configuredSize <= 0) return configuredSize;
+  if (configuredSize > sushiLibrarySearchInitialPageSize) {
+    return sushiLibrarySearchInitialPageSize;
+  }
+  return configuredSize;
+}
+
+/// Reuse home/dashboard views instead of GET /Users/{id}/Views on library open.
+Map<ViewModel, bool>? sushiLibrarySearchViewsFromCache(Ref ref, String? viewModelId) {
+  if (viewModelId == null || viewModelId.isEmpty) {
+    return null;
+  }
+  final cached = ref.read(viewsProvider);
+  if (cached.views.isEmpty || cached.loading) return null;
+  final selected = cached.views.firstWhere(
+    (element) => element.id == viewModelId,
+    orElse: () => cached.views.first,
+  );
+  if (selected.id != viewModelId) return null;
+  return {for (final view in cached.views) view: view.id == viewModelId};
+}
+
+/// Prime item types from the selected library without GET /Genres + /Items/Filters2.
+LibrarySearchModel sushiLibrarySearchPrimeCollectionTypes(LibrarySearchModel state) {
+  if (!state.views.hasEnabled) return state;
+  final enabledKinds = state.views.included.map((e) => e.collectionType.itemKinds).expand((e) => e);
+  return state.copyWith(
+    filters: state.filters.copyWith(
+      types: state.filters.types.setAll(false).setKeys(enabledKinds, true),
+    ),
+  );
+}
+
+/// Lighter DTO for poster grid — keeps ChildCount for series episode counts.
+List<ItemFields> sushiLibrarySearchListFields(CollectionType? collectionType) {
+  
+  return [
+    ItemFields.parentid,
+    ItemFields.primaryimageaspectratio,
+    if (collectionType == CollectionType.tvshows) ItemFields.childcount,
+  ];
+}

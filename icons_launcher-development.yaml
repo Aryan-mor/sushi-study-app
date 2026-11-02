@@ -1,0 +1,28 @@
+# Development flavor: yellow-rice roll so debug builds are obvious vs production cream rice.
+# Adaptive background is nori (#14150F), not rice.
+icons_launcher:
+  image_path: "icons/development/sushi_icon.png"
+  platforms:
+    android:
+      adaptive_foreground_image: "icons/development/sushi_adaptive_icon.png"
+      adaptive_background_color: "#14150F"
+      adaptive_monochrome_image: "icons/development/sushi_adaptive_icon.png"
+      notification_image: icons/sushi_notification_icon.png
+      enable: true
+    ios:
+      image_path: "icons/development/sushi_store_icon.png"
+      enable: false
+    # Windows/linux/web have no flavor-specific output paths; keep production icons
+    # in the repo so release builds are not overwritten by the dev assets.
+    windows:
+      image_path: "icons/development/sushi_icon_desktop.png"
+      enable: false
+    macos:
+      image_path: "icons/development/sushi_macos_icon.png"
+      enable: true
+    linux:
+      image_path: "icons/development/sushi_icon_desktop.png"
+      enable: false
+    web:
+      favicon_path: "icons/development/sushi_icon_desktop.png"
+      enable: false

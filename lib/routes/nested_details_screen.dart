@@ -1,0 +1,114 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+
+import 'package:auto_route/auto_route.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import 'package:fladder/models/item_base_model.dart';
+import 'package:fladder/sushi/sushi_detail_unavailable_telemetry.dart';
+import 'package:fladder/providers/items/item_details_provider.dart';
+import 'package:fladder/routes/auto_router.gr.dart';
+import 'package:fladder/screens/shared/fladder_notification_overlay.dart';
+import 'package:fladder/util/fladder_image.dart';
+import 'package:fladder/util/localization_helper.dart';
+
+@RoutePage()
+class DetailsScreen extends ConsumerStatefulWidget {
+  final String id;
+  final ItemBaseModel? item;
+  final Object? tag;
+  const DetailsScreen({
+    @QueryParam() this.id = '',
+    this.item,
+    this.tag,
+    super.key,
+  });
+
+  @override
+  ConsumerState<ConsumerStatefulWidget> createState() => _DetailsScreenState();
+}
+
+class _DetailsScreenState extends ConsumerState<DetailsScreen> {
+  late Widget currentWidget = const Center(
+    key: Key("progress-indicator"),
+    child: CircularProgressIndicator(strokeCap: StrokeCap.round),
+  );
+
+  @override
+  void didUpdateWidget(covariant DetailsScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (kIsWeb) {
+      updateWidget();
+    }
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    updateWidget();
+  }
+
+  Future<void> updateWidget() async {
+    Future.microtask(() async {
+      if (widget.item != null) {
+        setState(() {
+          currentWidget = widget.item!.detailScreenWidget;
+        });
+      } else {
+        final fetch = await ref.read(itemDetailsProvider.notifier).fetchDetailsWithTrace(widget.id);
+        if (context.mounted) {
+          if (fetch.item != null) {
+            setState(() {
+              currentWidget = fetch.item!.detailScreenWidget;
+            });
+          } else {
+            
+              unawaited(
+                SushiDetailUnavailableTelemetry.report(
+                  itemId: widget.id,
+                  hadInlineItem: widget.item != null,
+                  fetchTrace: fetch.trace,
+                  fetchAttempts: fetch.attempts,
+                  router: context.router,
+                  lastHttpStatus: fetch.lastHttpStatus,
+                ),
+              );
+            
+            if (context.mounted) {
+              FladderSnack.show(context.localized.shareItemUnavailable, context: context);
+            }
+            if (context.mounted) {
+              const DashboardRoute().navigate(context);
+            }
+          }
+        }
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      key: Key(widget.id),
+      children: [
+        Hero(
+          tag: widget.tag ?? UniqueKey(),
+          child: Container(
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.surface.withValues(alpha: 1.0),
+            ),
+            //Small offset to match detailscaffold
+            child: Transform.translate(
+                offset: const Offset(0, -5), child: FladderImage(image: widget.item?.getPosters?.primary)),
+          ),
+        ),
+        AnimatedSwitcher(
+          duration: const Duration(seconds: 1),
+          child: currentWidget,
+        )
+      ],
+    );
+  }
+}

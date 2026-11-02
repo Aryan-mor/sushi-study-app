@@ -1,0 +1,286 @@
+import 'dart:async';
+import 'dart:developer';
+import 'dart:io';
+
+import 'package:chopper/chopper.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:http/http.dart' as http;
+import 'package:punycoder/punycoder.dart';
+import 'package:riverpod_annotation/riverpod_annotation.dart';
+
+import 'package:fladder/jellyfin/jellyfin_open_api.swagger.dart';
+import 'package:fladder/sushi/sushi_env.dart';
+import 'package:fladder/sushi/sushi_force_repair_interceptor.dart';
+import 'package:fladder/sushi/sushi_http_performance_interceptor.dart';
+import 'package:fladder/sushi/sushi_playback_http_interceptor.dart';
+import 'package:fladder/sushi/sushi_reader_kind_interceptor.dart';
+import 'package:fladder/sushi/sushi_session_interceptor.dart';
+import 'package:fladder/sushi/sushi_swr_http_client.dart';
+import 'package:fladder/providers/auth_provider.dart';
+import 'package:fladder/providers/connectivity_provider.dart';
+import 'package:fladder/providers/service_provider.dart';
+import 'package:fladder/providers/user_provider.dart';
+part 'api_provider.g.dart';
+
+final serverUrlProvider = StateProvider<String?>((ref) {
+  final localUrlAvailable = ref.watch(localConnectionAvailableProvider);
+  final userCredentials = ref.watch(userProvider.select((value) => value?.credentials));
+  final tempUrl = ref.watch(authProvider.select((value) => value.serverLoginModel?.tempCredentials.url));
+  String? newUrl;
+
+  if (localUrlAvailable && userCredentials?.localUrl?.isNotEmpty == true) {
+    newUrl = userCredentials?.localUrl;
+  } else {
+    newUrl = userCredentials?.url ?? tempUrl;
+  }
+
+  return normalizeUrl(newUrl ?? "");
+});
+
+@riverpod
+class JellyApi extends _$JellyApi {
+  @override
+  JellyService build() {
+    http.Client? httpClient;
+    if (SushiEnv.isEnabled) {
+      httpClient = SushiSwrHttpClient(
+        inner: http.Client(),
+        userId: () => ref.read(userProvider)?.id ?? '',
+      );
+    }
+    return JellyService(
+      ref,
+      JellyfinOpenApi.create(
+        httpClient: httpClient,
+        interceptors: [
+          JellyRequest(ref),
+          if (SushiEnv.isEnabled) SushiHttpPerformanceInterceptor(),
+          if (SushiEnv.isEnabled) SushiPlaybackHttpInterceptor(ref),
+          if (SushiEnv.isEnabled) SushiForceRepairInterceptor(ref),
+          if (SushiEnv.isEnabled) SushiReaderKindInterceptor(),
+          SushiSessionInterceptor(ref),
+          JellyResponse(ref),
+          HttpLoggingInterceptor(level: Level.basic),
+        ],
+      ),
+    );
+  }
+}
+
+JellyfinOpenApi createJellyfinApiForAccount(Ref ref, String baseUrl, Map<String, String> headers) {
+  return JellyfinOpenApi.create(
+    interceptors: [
+      _TempJellyRequest(baseUrl: baseUrl, headers: headers),
+      JellyResponse(ref),
+      HttpLoggingInterceptor(level: Level.basic),
+    ],
+  );
+}
+
+/// One-off Jellyfin client (e.g. token refresh) without a [Ref] for response logging.
+JellyfinOpenApi createJellyfinApiForAccountUnauthenticated(String baseUrl, Map<String, String> headers) {
+  return JellyfinOpenApi.create(
+    interceptors: [
+      _TempJellyRequest(baseUrl: baseUrl, headers: headers),
+      HttpLoggingInterceptor(level: Level.basic),
+    ],
+  );
+}
+
+class _TempJellyRequest implements Interceptor {
+  _TempJellyRequest({required this.baseUrl, required this.headers});
+
+  final String baseUrl;
+  final Map<String, String> headers;
+
+  @override
+  FutureOr<Response<BodyType>> intercept<BodyType>(Chain<BodyType> chain) async {
+    if (baseUrl.isEmpty) throw const HttpException('No server URL provided for temp request');
+
+    final request = applyHeaders(chain.request.copyWith(baseUri: Uri.parse(baseUrl)), headers);
+    return chain.proceed(request);
+  }
+}
+
+class JellyRequest implements Interceptor {
+  JellyRequest(this.ref);
+
+  final Ref ref;
+
+  @override
+  FutureOr<Response<BodyType>> intercept<BodyType>(Chain<BodyType> chain) async {
+    // Sushi has no HTTP API at all (R-API-4) — "sushi://local" is a placeholder credential URL,
+    // not a real server. Fail immediately rather than dialing it.
+    throw const HttpException('Sushi has no HTTP API');
+  }
+}
+
+/// Whether [url] already carries an http or https scheme.
+/// Uses toLowerCase() because users may type mixed-case schemes (e.g. Https://, HTTP://).
+bool hasHttpScheme(String url) {
+  final lower = url.toLowerCase();
+  return lower.startsWith('http://') || lower.startsWith('https://');
+}
+
+String normalizeUrl(String url) {
+  final trimmed = url.trim();
+  if (trimmed.isEmpty) return '';
+
+  final withScheme = hasHttpScheme(trimmed) ? trimmed : 'http://$trimmed';
+  final parsed = Uri.parse(withScheme);
+
+  // Only punycode non-ASCII hostnames. IP addresses are always ASCII, so no special handling needed.
+  final host = parsed.host;
+  final hasNonAscii = host.runes.any((c) => c > 0x7F);
+
+  if (!hasNonAscii) return parsed.toString();
+
+  try {
+    final encodedHost = const PunycodeCodec().encode(host);
+    return parsed.replace(host: encodedHost).toString();
+  } catch (_) {
+    return parsed.toString();
+  }
+}
+
+Future<String?> _probeUrl(String baseUrl, String endpoint) async {
+  try {
+    await http.head(Uri.parse('$baseUrl$endpoint')).timeout(const Duration(seconds: 5));
+    // Any HTTP response (including 4xx/5xx) means the server is reachable at this URL.
+    // This only acts as scheme detection, not as health check.
+    return baseUrl;
+  } catch (e) {
+    log('Probe failed for $baseUrl$endpoint: $e');
+  }
+  return null;
+}
+
+
+/// Probes a Jellyfin server URL by hitting /System/Info/Public.
+Future<String?> probeJellyfinUrl(String baseUrl) => _probeUrl(baseUrl, '/System/Info/Public');
+
+/// Result of [probeAndNormalizeUrl]: the resolved URL and whether a probe succeeded.
+typedef ProbeResult = ({String url, bool probed});
+
+/// Tries https and http in parallel using [probeFn] if no scheme is provided.
+/// Always returns a usable URL (falls back to https when both probes fail).
+/// If a scheme is already present, returns the normalized URL without probing.
+Future<ProbeResult> probeAndNormalizeUrl(String url, Future<String?> Function(String) probeFn) async {
+  if (!hasHttpScheme(url)) {
+    final httpsUrl = normalizeUrl('https://$url');
+    final httpUrl = normalizeUrl('http://$url');
+    final httpFuture = probeFn(httpUrl);
+    final httpsResult = await probeFn(httpsUrl);
+    if (httpsResult != null) return (url: httpsResult, probed: true);
+    final httpResult = await httpFuture;
+    return (url: httpResult ?? httpsUrl, probed: httpResult != null);
+  }
+  return (url: normalizeUrl(url), probed: true);
+}
+
+Uri? tryParseServerBaseUri(String? url) {
+  if (url == null) return null;
+  final trimmed = url.trim();
+  if (trimmed.isEmpty) return null;
+
+  final parsed = Uri.tryParse(trimmed);
+  if (parsed == null || parsed.scheme.isEmpty || parsed.host.isEmpty) return null;
+  return parsed;
+}
+
+Uri? serverBaseUri(Ref ref) => tryParseServerBaseUri(ref.read(serverUrlProvider));
+
+Uri? buildServerUriFromBase(
+  String baseUrl, {
+  List<String> pathSegments = const [],
+  String? relativeUrl,
+  Map<String, String?>? queryParameters,
+}) {
+  final base = tryParseServerBaseUri(baseUrl);
+  if (base == null) return null;
+
+  Uri? relative;
+  if (relativeUrl != null && relativeUrl.trim().isNotEmpty) {
+    relative = Uri.tryParse(relativeUrl.trim());
+  }
+
+  if (relative != null && relative.hasScheme && relative.host.isNotEmpty) {
+    return relative;
+  }
+
+  final baseSegments = base.pathSegments.where((s) => s.isNotEmpty).toList(growable: false);
+  final relSegments = (relative?.pathSegments ?? const <String>[]).where((s) => s.isNotEmpty).toList(growable: false);
+  final extraSegments = pathSegments.where((s) => s.isNotEmpty).toList(growable: false);
+
+  final mergedSegments = <String>[...baseSegments, ...relSegments, ...extraSegments];
+
+  final mergedQuery = <String, String>{...?(relative?.queryParameters)};
+  if (queryParameters != null) {
+    for (final entry in queryParameters.entries) {
+      final value = entry.value;
+      if (value == null) continue;
+      mergedQuery[entry.key] = value;
+    }
+  }
+
+  return Uri(
+    scheme: base.scheme,
+    userInfo: base.userInfo,
+    host: base.host,
+    port: base.hasPort ? base.port : null,
+    pathSegments: mergedSegments,
+    queryParameters: mergedQuery.isNotEmpty ? mergedQuery : null,
+    fragment: relative?.hasFragment == true ? relative!.fragment : null,
+  );
+}
+
+Uri? buildServerUri(
+  Ref ref, {
+  List<String> pathSegments = const [],
+  String? relativeUrl,
+  Map<String, String?>? queryParameters,
+}) {
+  final baseUrl = ref.read(serverUrlProvider);
+  if (baseUrl == null || baseUrl.isEmpty) return null;
+  return buildServerUriFromBase(
+    baseUrl,
+    pathSegments: pathSegments,
+    relativeUrl: relativeUrl,
+    queryParameters: queryParameters,
+  );
+}
+
+String buildServerUrl(
+  Ref ref, {
+  List<String> pathSegments = const [],
+  String? relativeUrl,
+  Map<String, String?>? queryParameters,
+}) {
+  return buildServerUri(
+        ref,
+        pathSegments: pathSegments,
+        relativeUrl: relativeUrl,
+        queryParameters: queryParameters,
+      )?.toString() ??
+      '';
+}
+
+class JellyResponse implements Interceptor {
+  JellyResponse(this.ref);
+
+  final Ref ref;
+
+  @override
+  FutureOr<Response<BodyType>> intercept<BodyType>(Chain<BodyType> chain) async {
+    final Response<BodyType> response = await chain.proceed(chain.request);
+
+    if (!response.isSuccessful) {
+      log('x- ${response.base.statusCode} - ${response.base.reasonPhrase} - ${response.error} - ${response.base.request?.method} ${response.base.request?.url.toString()}');
+    }
+    if (response.statusCode == 404) {
+      chopperLogger.severe('404 NOT FOUND');
+    }
+
+    return response;
+  }
+}

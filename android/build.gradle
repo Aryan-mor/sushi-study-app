@@ -1,0 +1,130 @@
+// ---------------------------------------------------------------------------
+// Sushi: inject Dart defines before `:app` is evaluated (Flutter Gradle
+// plugin reads project.findProperty("dart-defines") from the app project).
+// Same encoding as Flutter BuildInfo.toGradleConfig (comma-separated Base64
+// of UTF-8 "KEY=value"). Merge order: CLI -Pdart-defines, then
+// assets/env/default.env, then dart_defines.ngrok.json (wins on duplicates).
+// ---------------------------------------------------------------------------
+gradle.beforeProject { proj ->
+    if (proj.path != ":app") {
+        return
+    }
+    def flutterProjectDir = proj.rootProject.projectDir.parentFile
+    // Bot usernames (BOT_USERNAME / OXPLAYER_BOT_USERNAME) intentionally omitted —
+    // store/direct builds use baked SUSHI_* handles; do not inject from default.env.
+    def keysFromEnv = [
+            "OXPLAYER",
+            "OXPLAYER_API_BASE",
+            "OXPLAYER_API_BASE_URL",
+    ] as Set
+
+    def stripQuotes = { String s ->
+        def t = s.trim()
+        if (t.length() >= 2 &&
+                ((t.startsWith('"') && t.endsWith('"')) ||
+                        (t.startsWith("'") && t.endsWith("'")))) {
+            return t.substring(1, t.length() - 1).trim()
+        }
+        return t
+    }
+
+    def encodeDefine = { String entry ->
+        java.util.Base64.getEncoder().encodeToString(entry.getBytes(java.nio.charset.StandardCharsets.UTF_8))
+    }
+
+    def parseEnvFile = { File f ->
+        def out = [:]
+        if (!f.isFile()) return out
+        f.eachLine { String rawLine ->
+            def line = rawLine.trim()
+            if (!line || line.startsWith("#")) return
+            def eq = line.indexOf("=")
+            if (eq < 1) return
+            def k = line.substring(0, eq).trim()
+            if (!keysFromEnv.contains(k)) return
+            def v = stripQuotes(line.substring(eq + 1))
+            if (v != null && !v.isEmpty()) out[k] = v
+        }
+        return out
+    }
+
+    def parseNgrokJson = { File f ->
+        def out = [:]
+        if (!f.isFile()) return out
+        def parsed
+        try {
+            parsed = new groovy.json.JsonSlurper().parse(f)
+        } catch (ignored) {
+            return out
+        }
+        if (!(parsed instanceof Map)) return out
+        parsed.each { ek, ev ->
+            if (ek == null || ev == null) return
+            def k = ek.toString().trim()
+            if (k.isEmpty()) return
+            def v = ev.toString()
+            if (!v.isEmpty()) out[k] = v
+        }
+        return out
+    }
+
+    def encodeMap = { Map m ->
+        if (m.isEmpty()) return ""
+        m.collect { e -> encodeDefine("${e.key}=${e.value}") }.join(",")
+    }
+
+    def pm = gradle.startParameter.projectProperties
+    def existing = pm != null ? pm.get("dart-defines") : null
+    if (existing == null) existing = proj.rootProject.findProperty("dart-defines")
+    if (existing == null) existing = proj.findProperty("dart-defines")
+    def existingStr = existing != null ? existing.toString().trim() : ""
+
+    def envMap = parseEnvFile(new File(flutterProjectDir, "assets/env/default.env"))
+    def ngrokMap = parseNgrokJson(new File(flutterProjectDir, "dart_defines.ngrok.json"))
+
+    def mergedMap = new LinkedHashMap()
+    mergedMap.putAll(envMap)
+    mergedMap.putAll(ngrokMap)
+
+    def extra = encodeMap(mergedMap)
+    if (extra.isEmpty()) {
+        return
+    }
+
+    def merged = existingStr ? "${existingStr},${extra}" : extra
+    proj.ext["dart-defines"] = merged
+}
+
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+rootProject.buildDir = "../build"
+
+subprojects {
+    project.buildDir = "${rootProject.buildDir}/${project.name}"
+}
+
+subprojects {
+    if (name == "permission_handler_android") {
+        apply plugin: "org.jetbrains.kotlin.android"
+    }
+}
+
+subprojects {
+    project.evaluationDependsOn(":app")
+}
+
+// Some Flutter plugins still compile with Java 8; JDK 21 only warns (build still succeeds).
+subprojects { sub ->
+    sub.tasks.withType(JavaCompile).configureEach {
+        options.compilerArgs.add("-Xlint:-options")
+    }
+}
+
+tasks.register("clean", Delete) {
+    delete rootProject.buildDir
+}

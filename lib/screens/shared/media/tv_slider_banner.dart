@@ -1,0 +1,419 @@
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import 'package:fladder/models/item_base_model.dart';
+import 'package:fladder/models/items/episode_model.dart';
+import 'package:fladder/models/items/watched_state.dart';
+import 'package:fladder/screens/details_screens/components/overview_header.dart';
+import 'package:fladder/screens/shared/media/components/media_header.dart';
+import 'package:fladder/screens/shared/media/components/media_play_button.dart';
+import 'package:fladder/screens/shared/media/components/small_detail_widgets.dart';
+import 'package:fladder/theme.dart';
+import 'package:fladder/util/adaptive_layout/adaptive_layout.dart';
+import 'package:fladder/util/fladder_image.dart';
+import 'package:fladder/util/focus_provider.dart';
+import 'package:fladder/sushi/sushi_catalog_interest_status.dart';
+import 'package:fladder/sushi/sushi_slider_image.dart';
+import 'package:fladder/sushi/sushi_tv_image_sizes.dart';
+import 'package:fladder/sushi/sushi_tv_ui_limits.dart';
+import 'package:fladder/util/item_base_model/item_base_model_extensions.dart';
+import 'package:fladder/util/item_base_model/play_item_helpers.dart';
+import 'package:fladder/util/localization_helper.dart';
+import 'package:fladder/widgets/navigation_scaffold/components/top_navigation_bar.dart';
+import 'package:fladder/widgets/shared/ensure_visible.dart';
+import 'package:fladder/widgets/shared/item_actions.dart';
+import 'package:fladder/widgets/shared/modal_bottom_sheet.dart';
+
+const Duration _kAnimationDuration = Duration(milliseconds: 350);
+
+enum _SlideDirection { left, right }
+
+class TVSliderBanner extends ConsumerStatefulWidget {
+  final List<ItemBaseModel> items;
+  final Function(ItemBaseModel selected) onSelect;
+  final double maxHeight;
+
+  const TVSliderBanner({
+    required this.items,
+    required this.onSelect,
+    required this.maxHeight,
+    super.key,
+  });
+
+  @override
+  ConsumerState<TVSliderBanner> createState() => _FocusedFullBannerState();
+}
+
+class _FocusedFullBannerState extends ConsumerState<TVSliderBanner> {
+  int _currentIndex = 0;
+  _SlideDirection _slideDirection = _SlideDirection.right;
+
+  List<ItemBaseModel> get _items => SushiTvUiLimits.capHomeSliderForTv(ref, widget.items);
+
+  ItemBaseModel get _currentItem => _items[_currentIndex.clamp(0, _items.length - 1)];
+
+  bool _hasFocus = false;
+
+  @override
+  void didUpdateWidget(covariant TVSliderBanner oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (_currentIndex >= _items.length) {
+      _currentIndex = 0;
+    }
+  }
+
+  void _navigateLeft() {
+    setState(() {
+      _slideDirection = _SlideDirection.left;
+      _currentIndex = _currentIndex > 0 ? _currentIndex - 1 : _items.length - 1;
+    });
+  }
+
+  void _navigateRight() {
+    setState(() {
+      _slideDirection = _SlideDirection.right;
+      _currentIndex = (_currentIndex + 1) % _items.length;
+    });
+  }
+
+  bool _focusTopBar() {
+    if (!topBarNode.canRequestFocus || topBarNode.context?.mounted != true) {
+      return false;
+    }
+
+    final focused = topBarNode.focusedChild;
+    if (focused != null && focused.canRequestFocus) {
+      focused.requestFocus();
+      return true;
+    }
+
+    for (final descendant in topBarNode.descendants) {
+      if (descendant.canRequestFocus && !descendant.skipTraversal) {
+        descendant.requestFocus();
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  KeyEventResult _handleFocusKeyEvent(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+
+    if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
+      _navigateLeft();
+      return KeyEventResult.handled;
+    } else if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
+      _navigateRight();
+      return KeyEventResult.handled;
+    } else if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+      if (_focusTopBar()) {
+        return KeyEventResult.handled;
+      }
+      Actions.maybeInvoke(context, const DirectionalFocusIntent(TraversalDirection.up));
+      return KeyEventResult.handled;
+    }
+
+    return KeyEventResult.ignored;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final radius = FladderTheme.largeShape.borderRadius;
+
+    final isDpad = AdaptiveLayout.inputDeviceOf(context) == InputDevice.dPad;
+
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: SizedBox(
+        height: widget.maxHeight * 1.3,
+        child: FocusButton(
+          onTap: () => isDpad ? _currentItem.play(context, ref) : _currentItem.navigateTo(context),
+          onLongPress: () => _showBottomSheet(context, ref),
+          onSecondaryTapDown: (details) => _showContextMenu(context, ref, details.globalPosition),
+          visualizeFocus: false,
+          autoFocus: isDpad,
+          borderRadius: radius,
+          onKeyEvent: _handleFocusKeyEvent,
+          onFocusChanged: (focused) {
+            setState(() => _hasFocus = focused);
+            if (focused) {
+              context.ensureVisible();
+            }
+          },
+          child: Container(
+            decoration: BoxDecoration(
+              borderRadius: radius,
+              color: Theme.of(context).colorScheme.surfaceContainer,
+            ),
+            foregroundDecoration: BoxDecoration(
+              borderRadius: radius,
+              border: Border.all(width: 1, color: Colors.white.withAlpha(45)),
+            ),
+            clipBehavior: Clip.hardEdge,
+            child: AnimatedSwitcher(
+              duration: _kAnimationDuration,
+              transitionBuilder: (child, animation) {
+                final offsetAnimation = Tween<Offset>(
+                  begin: Offset(_slideDirection == _SlideDirection.right ? 0.1 : -0.1, 0.0),
+                  end: Offset.zero,
+                ).animate(CurvedAnimation(
+                  parent: animation,
+                  curve: Curves.easeInOut,
+                ));
+
+                return SlideTransition(
+                  position: offsetAnimation,
+                  child: FadeTransition(
+                    opacity: animation,
+                    child: child,
+                  ),
+                );
+              },
+              child: FladderImage(
+                key: ValueKey(_currentItem.id),
+                image: sushiSliderImage(_currentItem),
+                fit: BoxFit.cover,
+                decodeHeight: SushiTvImageSizes.decodeHeroHeight,
+              ),
+            ),
+          ),
+          overlays: [
+            Align(
+              alignment: Alignment.bottomLeft,
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  mainAxisSize: MainAxisSize.max,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  spacing: 8,
+                  children: [
+                    Flexible(
+                      child: IgnorePointer(
+                        child: _BannerInfoOverlay(poster: _currentItem),
+                      ),
+                    ),
+                    Row(
+                      spacing: 16,
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        MediaPlayButton(
+                          item: _currentItem,
+                          forceFocusOutline: _hasFocus,
+                          showRestartOption: !isDpad,
+                          onPressed: (restart) {
+                            if (restart) {
+                              _currentItem.play(context, ref, startPosition: Duration.zero);
+                            } else {
+                              _currentItem.play(context, ref);
+                            }
+                          },
+                        ),
+                        AnimatedOpacity(
+                          opacity: _hasFocus ? 1.0 : 0.0,
+                          duration: _kAnimationDuration,
+                          child: ExcludeFocus(
+                            child: _NavigationIndicator(
+                              items: _items,
+                              currentIndex: _currentIndex,
+                              onTap: (index) {
+                                setState(() {
+                                  _slideDirection =
+                                      index > _currentIndex ? _SlideDirection.right : _SlideDirection.left;
+                                  _currentIndex = index;
+                                });
+                              },
+                            ),
+                          ),
+                        )
+                      ],
+                    )
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showBottomSheet(BuildContext context, WidgetRef ref) async {
+    if (!context.mounted) return;
+    showBottomSheetPill(
+      context: context,
+      item: _currentItem,
+      content: (scrollContext, scrollController) => sushiReactivePosterActionsList(
+        context: scrollContext,
+        ref: ref,
+        poster: _currentItem,
+        scrollController: scrollController,
+      ),
+    );
+  }
+
+  Future<void> _showContextMenu(BuildContext context, WidgetRef ref, Offset globalPos) async {
+    if (!context.mounted) return;
+    final position = RelativeRect.fromLTRB(globalPos.dx, globalPos.dy, globalPos.dx, globalPos.dy);
+    await showMenu(
+      context: context,
+      position: position,
+      items: _currentItem
+          .generateActions(
+            context,
+            ref,
+          )
+          .popupMenuItems(useIcons: true),
+    );
+  }
+}
+
+class _BannerInfoOverlay extends StatelessWidget {
+  final ItemBaseModel poster;
+
+  const _BannerInfoOverlay({required this.poster});
+
+  @override
+  Widget build(BuildContext context) {
+    const opacity = 0.95;
+    final playState = poster.watchedState(context.localized);
+
+    final labelWidget = switch (playState) {
+      PartiallyPlayed(:final label) => SimpleLabel(
+          color: Theme.of(context).colorScheme.primaryContainer,
+          iconColor: Theme.of(context).colorScheme.primary,
+          label: Text(label),
+        ),
+      Played() => SimpleLabel(
+          color: Theme.of(context).colorScheme.primaryContainer,
+          iconColor: Theme.of(context).colorScheme.primary,
+          label: const Icon(
+            Icons.check_rounded,
+            size: 18,
+          ),
+        ),
+      Unplayed() => null,
+    };
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.max,
+      spacing: 8,
+      children: [
+        Expanded(
+          child: FractionallySizedBox(
+            heightFactor: 0.65,
+            child: MediaHeader(
+              name: poster.name,
+              alignment: Alignment.topLeft,
+              textAlign: TextAlign.start,
+              logo: poster.tvPosterLogo,
+            ),
+          ),
+        ),
+        ...switch (poster) {
+          EpisodeModel episode => [
+              Row(
+                spacing: 12,
+                children: [
+                  Text(
+                    episode.episodeLabel(context.localized),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context)
+                        .textTheme
+                        .titleMedium
+                        ?.copyWith(fontWeight: FontWeight.bold, color: Colors.white),
+                  ),
+                  const CircleAvatar(
+                    radius: 3,
+                    backgroundColor: Colors.white,
+                  ),
+                  MetadataLabels(
+                    favourite: poster.userData.isFavourite ? true : null,
+                    officialRating: episode.overview.parentalRating,
+                    productionYear: episode.overview.productionYear?.toString(),
+                    communityRating: episode.overview.communityRating,
+                    runTime: episode.overview.runTime,
+                    additionalLabels: [if (labelWidget != null) labelWidget],
+                  ),
+                ],
+              ),
+              Text(
+                episode.overview.summary,
+                style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                      color: Colors.white.withValues(alpha: opacity),
+                      fontWeight: FontWeight.bold,
+                    ),
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ],
+          _ => [
+              MetadataLabels(
+                favourite: poster.userData.isFavourite ? true : null,
+                officialRating: poster.overview.parentalRating,
+                productionYear: poster.overview.productionYear?.toString(),
+                communityRating: poster.overview.communityRating,
+                runTime: poster.overview.runTime,
+                additionalLabels: [if (labelWidget != null) labelWidget],
+              ),
+              Genres(
+                genres: poster.overview.genreItems.take(6).toList(),
+              ),
+              Text(
+                poster.overview.summary,
+                style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                      color: Colors.white.withValues(alpha: opacity),
+                      fontWeight: FontWeight.bold,
+                    ),
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ],
+        },
+      ],
+    );
+  }
+}
+
+class _NavigationIndicator extends StatelessWidget {
+  final List<ItemBaseModel> items;
+  final int currentIndex;
+  final Function(int index)? onTap;
+
+  const _NavigationIndicator({
+    required this.items,
+    required this.currentIndex,
+    this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    const double size = 12.0;
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      spacing: 8,
+      children: List.generate(items.length, (index) {
+        final selected = index == currentIndex;
+        return InkWell(
+          onTap: () => onTap?.call(index),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 125),
+            width: selected ? size * 2 : size,
+            height: size,
+            decoration: BoxDecoration(
+              color: Colors.white.withAlpha(selected ? 225 : 100),
+              borderRadius: BorderRadius.circular(64),
+            ),
+          ),
+        );
+      }),
+    );
+  }
+}

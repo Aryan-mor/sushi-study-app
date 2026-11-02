@@ -1,0 +1,128 @@
+import 'dart:async';
+import 'dart:convert';
+
+import 'package:chopper/chopper.dart';
+import 'package:fladder/jellyfin/jellyfin_open_api.swagger.dart';
+import 'package:fladder/sushi/sushi_playback_telemetry.dart';
+
+/// Default retry interval when the server omits `Retry-After` and `retry_after`.
+const int sushiPlaybackHydrateRetryAfterDefaultSec = 5;
+
+/// Safety cap so a broken server cannot keep the client polling forever.
+const Duration sushiPlaybackHydrateMaxPollDuration = Duration(minutes: 15);
+
+const int _httpOk = 200;
+const int _httpAccepted = 202;
+const int _httpServiceUnavailable = 503;
+
+typedef PlaybackInfoRequestFn = Future<Response<PlaybackInfoResponse>> Function();
+
+/// Polls [request] while the API returns HTTP 202 or retryable 503 (stream preparing).
+///
+/// Returns the first HTTP 200 response, or the first non-retryable error response.
+/// Uses [Future.delayed] between attempts so the UI thread is never blocked.
+Future<Response<PlaybackInfoResponse>> sushiPollPlaybackInfoUntilReady(
+  PlaybackInfoRequestFn request,
+) async {
+  final deadline = DateTime.now().add(sushiPlaybackHydrateMaxPollDuration);
+
+  while (true) {
+    final response = await request();
+    final status = response.statusCode;
+
+    if (status == _httpOk) {
+      return response;
+    }
+
+    if (_isPreparingStatus(status, response)) {
+      if (DateTime.now().isAfter(deadline)) {
+        final ex = SushiPlaybackHydrateTimeoutException(
+          lastRetryAfterSec: sushiPlaybackHydrateRetryAfterSeconds(response),
+        );
+        unawaited(SushiPlaybackTelemetry.reportFailure(
+          stage: 'playback_info',
+          reason: 'hydrate_timeout',
+          httpStatus: status,
+          transient: true,
+        ));
+        throw ex;
+      }
+      final delay = Duration(seconds: sushiPlaybackHydrateRetryAfterSeconds(response));
+      await Future<void>.delayed(delay);
+      continue;
+    }
+
+    if (status >= 400) {
+      unawaited(SushiPlaybackTelemetry.reportFailure(
+        stage: 'playback_info',
+        reason: 'http_$status',
+        httpStatus: status,
+      ));
+      return response;
+    }
+
+    // Other 2xx (unexpected for PlaybackInfo) — pass through.
+    if (response.isSuccessful) {
+      return response;
+    }
+
+    return response;
+  }
+}
+
+bool _isPreparingStatus(int status, Response<PlaybackInfoResponse> response) {
+  if (status == _httpAccepted) return true;
+  if (status != _httpServiceUnavailable) return false;
+
+  final retryAfter = response.base.headers['retry-after'];
+  if (retryAfter != null && retryAfter.trim().isNotEmpty) {
+    return true;
+  }
+
+  final rawBody = response.bodyString.trim().toLowerCase();
+  if (rawBody.isEmpty) return false;
+
+  return rawBody.contains('prepar') ||
+      rawBody.contains('probe') ||
+      rawBody.contains('index') ||
+      rawBody.contains('retry');
+}
+
+/// Parses retry delay from `Retry-After` header, then JSON `retry_after`, else [sushiPlaybackHydrateRetryAfterDefaultSec].
+int sushiPlaybackHydrateRetryAfterSeconds(Response<PlaybackInfoResponse> response) {
+  final header = response.base.headers['retry-after'];
+  if (header != null) {
+    final parsed = int.tryParse(header.trim());
+    if (parsed != null && parsed > 0) {
+      return parsed;
+    }
+  }
+
+  final rawBody = response.bodyString;
+  if (rawBody.trim().isNotEmpty) {
+    try {
+      final decoded = jsonDecode(rawBody);
+      if (decoded is Map<String, dynamic>) {
+        final retry = decoded['retry_after'];
+        if (retry is num && retry > 0) {
+          return retry.round();
+        }
+      }
+    } catch (_) {
+      // Ignore malformed preparing payload.
+    }
+  }
+
+  return sushiPlaybackHydrateRetryAfterDefaultSec;
+}
+
+/// Thrown when hydrate polling exceeds [sushiPlaybackHydrateMaxPollDuration].
+final class SushiPlaybackHydrateTimeoutException implements Exception {
+  SushiPlaybackHydrateTimeoutException({required this.lastRetryAfterSec});
+
+  final int lastRetryAfterSec;
+
+  @override
+  String toString() =>
+      'Playback hydrate timed out after ${sushiPlaybackHydrateMaxPollDuration.inMinutes} minutes';
+}

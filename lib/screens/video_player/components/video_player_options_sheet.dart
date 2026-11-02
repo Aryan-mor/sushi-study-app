@@ -1,0 +1,630 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+import 'package:collection/collection.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:iconsax_plus/iconsax_plus.dart';
+
+import 'package:fladder/models/item_base_model.dart';
+import 'package:fladder/models/items/episode_model.dart';
+import 'package:fladder/models/playback/direct_playback_model.dart';
+import 'package:fladder/models/playback/offline_playback_model.dart';
+import 'package:fladder/models/playback/playback_model.dart';
+import 'package:fladder/models/playback/transcode_playback_model.dart';
+import 'package:fladder/models/settings/video_player_settings.dart';
+import 'package:fladder/providers/settings/video_player_settings_provider.dart';
+import 'package:fladder/providers/user_provider.dart';
+import 'package:fladder/providers/video_player_provider.dart';
+import 'package:fladder/screens/metadata/info_screen.dart';
+import 'package:fladder/screens/playlists/add_to_playlists.dart';
+import 'package:fladder/screens/video_player/components/video_player_quality_controls.dart';
+import 'package:fladder/screens/video_player/components/video_player_queue.dart';
+import 'package:fladder/screens/video_player/components/video_subtitle_controls.dart';
+import 'package:fladder/sushi/sushi_env.dart';
+import 'package:fladder/sushi/sushi_title_subtitle_store.dart';
+import 'package:fladder/sushi/subtitles/sushi_online_subtitle_sheet.dart';
+import 'package:fladder/sushi/subtitles/sushi_subtitle_actions.dart';
+import 'package:fladder/util/focus_provider.dart';
+import 'package:fladder/util/adaptive_layout/adaptive_layout.dart';
+import 'package:fladder/util/device_orientation_extension.dart';
+import 'package:fladder/util/list_padding.dart';
+import 'package:fladder/util/localization_helper.dart';
+import 'package:fladder/util/map_bool_helper.dart';
+import 'package:fladder/util/refresh_state.dart';
+import 'package:fladder/util/string_extensions.dart';
+import 'package:fladder/widgets/shared/enum_selection.dart';
+import 'package:fladder/widgets/shared/fladder_slider.dart';
+import 'package:fladder/widgets/shared/item_actions.dart';
+import 'package:fladder/widgets/shared/modal_bottom_sheet.dart';
+import 'package:fladder/widgets/shared/spaced_list_tile.dart';
+import 'package:fladder/sushi/sushi_playback_model.dart';
+
+Future<void> showVideoPlayerOptions(BuildContext context, Function() minimizePlayer) {
+  return showBottomSheetPill(
+    context: context,
+    content: (context, scrollController) {
+      return VideoOptions(
+        controller: scrollController,
+        minimizePlayer: minimizePlayer,
+      );
+    },
+  );
+}
+
+class VideoOptions extends ConsumerStatefulWidget {
+  final ScrollController controller;
+  final Function() minimizePlayer;
+  const VideoOptions({required this.controller, required this.minimizePlayer, super.key});
+
+  @override
+  ConsumerState<ConsumerStatefulWidget> createState() => _VideoOptionsMobileState();
+}
+
+class _VideoOptionsMobileState extends ConsumerState<VideoOptions> {
+  late int page = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    final currentItem = ref.watch(playBackModel.select((value) => value?.item));
+    final videoSettings = ref.watch(videoPlayerSettingsProvider);
+    final currentMediaStreams = ref.watch(playBackModel.select((value) => value?.mediaStreams));
+    final bitRateOptions = ref.watch(playBackModel.select((value) => value?.bitRateOptions));
+    final sushiSub = ref.watch(sushiActiveSubtitleProvider);
+    // A personal video's tracks live on the model, not in server media streams (ADR 0037).
+    final personalSub = ref.watch(playBackModel.select((value) => sushiIsPersonalPlayback(value)
+        ? value!.subStreams?.firstWhereOrNull((s) => s.index == value.mediaStreams?.defaultSubStreamIndex)
+        : null));
+
+    Widget mainPage() {
+      return ListView(
+        key: const Key("mainPage"),
+        shrinkWrap: true,
+        controller: widget.controller,
+        children: [
+          InkWell(
+            onTap: () => setState(() => page = 2),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: Row(
+                children: [
+                  Column(
+                    mainAxisSize: MainAxisSize.max,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        currentItem?.title ?? "",
+                        style: Theme.of(context).textTheme.titleLarge,
+                      ),
+                    ],
+                  ),
+                  const Spacer(),
+                  const Opacity(opacity: 0.1, child: Icon(Icons.info_outline_rounded))
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          const Divider(height: 1),
+          const SizedBox(height: 12),
+          if (!AdaptiveLayout.of(context).isDesktop)
+            ListTile(
+              title: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Flexible(flex: 1, child: Text(context.localized.screenBrightness)),
+                  Flexible(
+                    child: Row(
+                      children: [
+                        Flexible(
+                          child: Opacity(
+                            opacity: videoSettings.screenBrightness == null ? 0.5 : 1,
+                            child: Slider(
+                              value: videoSettings.screenBrightness ?? 1.0,
+                              min: 0,
+                              max: 1,
+                              onChanged: (value) =>
+                                  ref.read(videoPlayerSettingsProvider.notifier).setScreenBrightness(value),
+                            ),
+                          ),
+                        ),
+                        IconButton(
+                          onPressed: () => ref.read(videoPlayerSettingsProvider.notifier).setScreenBrightness(null),
+                          icon: Opacity(
+                            opacity: videoSettings.screenBrightness != null ? 0.5 : 1,
+                            child: Icon(
+                              IconsaxPlusBold.autobrightness,
+                              color: Theme.of(context).colorScheme.primary,
+                            ),
+                          ),
+                        )
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          SpacedListTile(
+            title: Text(context.localized.subtitles),
+            content: Text(
+              sushiSub != null
+                  ? (sushiSub.auto ? 'Automatic · ${sushiSub.label}' : sushiSub.label)
+                  : (personalSub ?? currentMediaStreams?.currentSubStream)?.label(context) ?? context.localized.off,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            // Always openable: the sheet also hosts the Sushi Automatic / Online picker, which
+            // does not need an embedded subtitle track to exist (doc 15 §7).
+            onTap: () => showSubSelection(context),
+          ),
+          SpacedListTile(
+            title: Text(context.localized.audio(1)),
+            content: Text(currentMediaStreams?.currentAudioStream?.label(context) ?? context.localized.off),
+            onTap: currentMediaStreams?.audioStreams.isNotEmpty == true ? () => showAudioSelection(context) : null,
+          ),
+          ListTile(
+            title: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Flexible(
+                  child: EnumSelection(
+                    label: Text(context.localized.scale),
+                    current: videoSettings.videoFit.name.toUpperCaseSplit(),
+                    itemBuilder: (context) => BoxFit.values
+                        .map((value) => ItemActionButton(
+                              label: Text(value.name.toUpperCaseSplit()),
+                              action: () => ref.read(videoPlayerSettingsProvider.notifier).setFitType(value),
+                            ))
+                        .toList(),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (!AdaptiveLayout.of(context).isDesktop)
+            ListTile(
+              onTap: () => ref.read(videoPlayerSettingsProvider.notifier).setFillScreen(!videoSettings.fillScreen),
+              title: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Expanded(
+                    flex: 3,
+                    child: Text(context.localized.videoScalingFill),
+                  ),
+                  const Spacer(),
+                  Switch(
+                    value: videoSettings.fillScreen,
+                    onChanged: (value) => ref.read(videoPlayerSettingsProvider.notifier).setFillScreen(value),
+                  )
+                ],
+              ),
+            ),
+          if (!AdaptiveLayout.of(context).isDesktop && !kIsWeb)
+            SpacedListTile(
+              title: Text(context.localized.playerSettingsOrientationTitle),
+              onTap: () => showOrientationOptions(context, ref),
+            ),
+          ListTile(
+            onTap: () {
+              Navigator.of(context).pop();
+              showPlaybackSpeed(context);
+            },
+            title: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Expanded(
+                  flex: 3,
+                  child: Text(context.localized.playbackRate),
+                ),
+                const Spacer(),
+                Text("x${ref.watch(playbackRateProvider)}")
+              ],
+            ),
+          ),
+          if (bitRateOptions?.isNotEmpty == true)
+            ListTile(
+              title: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Expanded(
+                    flex: 3,
+                    child: Text(context.localized.qualityOptionsTitle),
+                  ),
+                  const Spacer(),
+                  Text(bitRateOptions?.enabledFirst.keys.firstOrNull?.label(context) ?? "")
+                ],
+              ),
+              onTap: () {
+                Navigator.of(context).pop();
+                openQualityOptions(context);
+              },
+            )
+        ],
+      );
+    }
+
+    Widget playbackSettings() {
+      final playbackState = ref.watch(playBackModel);
+      return ListView(
+        key: const Key("PlaybackSettings"),
+        shrinkWrap: true,
+        controller: widget.controller,
+        children: [
+          navTitle(context.localized.playBackSettings, null),
+          if (playbackState?.queue.isNotEmpty == true)
+            ListTile(
+              leading: const Icon(Icons.video_collection_rounded),
+              title: const Text("Show queue"),
+              onTap: () {
+                Navigator.of(context).pop();
+                ref.read(videoPlayerProvider).pause();
+                showFullScreenItemQueue(
+                  context,
+                  items: playbackState?.queue ?? [],
+                  currentItem: playbackState?.item,
+                  onSectionReorder: (section, oldIndex, newIndex) {
+                    return ref.read(videoPlayerProvider.notifier).reorderAudioQueueSection(
+                          section,
+                          oldIndex,
+                          newIndex,
+                        );
+                  },
+                  playSelected: ref.read(videoPlayerProvider.notifier).playAudioQueueItem,
+                );
+              },
+            )
+        ],
+      );
+    }
+
+    return Column(
+      children: [
+        AnimatedSize(
+          duration: const Duration(milliseconds: 250),
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 250),
+            child: switch (page) {
+              1 => playbackSettings(),
+              2 => itemInfo(currentItem, context),
+              _ => mainPage(),
+            },
+          ),
+        ),
+        const SizedBox(height: 16),
+      ],
+    );
+  }
+
+  ListView itemInfo(ItemBaseModel? currentItem, BuildContext context) {
+    return ListView(
+      shrinkWrap: true,
+      controller: widget.controller,
+      children: [
+        navTitle(currentItem?.title, currentItem?.subTextShort(context.localized)),
+        if (currentItem != null) ...{
+          if (currentItem.type == FladderItemType.episode)
+            ListTile(
+              onTap: () {
+                Navigator.of(context).pop();
+                widget.minimizePlayer();
+                (this as EpisodeModel).parentBaseModel.navigateTo(context);
+              },
+              title: Text(context.localized.openShow),
+            ),
+          ListTile(
+            onTap: () async {
+              Navigator.of(context).pop();
+              widget.minimizePlayer();
+              await currentItem.navigateTo(context);
+            },
+            title: Text(context.localized.showDetails),
+          ),
+          if (currentItem.type != FladderItemType.playlist)
+            ListTile(
+              onTap: () async {
+                await addItemToPlaylist(context, [currentItem]);
+                if (context.mounted) {
+                  context.refreshData();
+                }
+              },
+              title: Text(context.localized.addToPlaylist),
+            ),
+          ListTile(
+            onTap: () async {
+              final response = await ref
+                  .read(userProvider.notifier)
+                  .setAsFavorite(!(currentItem.userData.isFavourite == true), currentItem.id);
+              final newItem = currentItem.copyWith(userData: response?.body);
+              final playbackModel = switch (ref.read(playBackModel)) {
+                DirectPlaybackModel value => value.copyWith(item: newItem),
+                TranscodePlaybackModel value => value.copyWith(item: newItem),
+                OfflinePlaybackModel value => value.copyWith(item: newItem),
+                _ => null
+              };
+              ref.read(playBackModel.notifier).update((state) => playbackModel);
+              Navigator.of(context).pop();
+            },
+            title: Text(currentItem.userData.isFavourite == true
+                ? context.localized.removeAsFavorite
+                : context.localized.addAsFavorite),
+          ),
+          ListTile(
+            onTap: () {
+              Navigator.of(context).pop();
+              showInfoScreen(context, currentItem);
+            },
+            title: Text(context.localized.info),
+          ),
+        }
+      ],
+    );
+  }
+
+  Widget navTitle(String? title, String? subText) {
+    return Column(
+      children: [
+        Row(
+          children: [
+            const SizedBox(width: 8),
+            BackButton(
+              onPressed: () => setState(() => page = 0),
+            ),
+            const SizedBox(width: 16),
+            Column(
+              children: [
+                if (title != null)
+                  Text(
+                    title,
+                    style: Theme.of(context).textTheme.titleLarge,
+                  ),
+                if (subText != null)
+                  Text(
+                    subText,
+                    style: Theme.of(context).textTheme.titleMedium,
+                  )
+              ],
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        const Divider(height: 1),
+        const SizedBox(height: 12),
+      ],
+    );
+  }
+}
+
+Future<void> showSubSelection(BuildContext context) {
+  return showDialog(
+    context: context,
+    builder: (context) {
+      return Consumer(
+        builder: (context, ref, child) {
+          final playbackModel = ref.watch(playBackModel);
+          final player = ref.watch(videoPlayerProvider);
+          final sushiSubActive = !sushiEmbeddedRowSelectable(ref);
+          return SimpleDialog(
+            contentPadding: const EdgeInsets.only(top: 8, bottom: 24),
+            title: Row(
+              children: [
+                Text(context.localized.subtitle),
+                const Spacer(),
+                if (player.backend == PlayerOptions.libMPV || player.backend == PlayerOptions.libMDK)
+                  FocusButton(
+                    onTap: () {
+                      Navigator.pop(context);
+                      showSubtitleControls(
+                        context: context,
+                        label: context.localized.subtitleConfiguration,
+                      );
+                    },
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      child: Text(
+                        'Options',
+                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                              decoration: TextDecoration.underline,
+                            ),
+                      ),
+                    ),
+                  )
+              ],
+            ),
+            children: [
+              // A personal video (ADR 0037) offers only its own tracks: no Automatic, Online or AI.
+              if (!sushiIsPersonalPlayback(playbackModel)) ...sushiSubtitleMenuRows(context, ref),
+              ...?playbackModel?.subStreams?.mapIndexed(
+                (index, subModel) {
+                  final selected =
+                      !sushiSubActive && playbackModel.mediaStreams?.defaultSubStreamIndex == subModel.index;
+                  return ListTile(
+                    title: Text(
+                      subModel.label(context),
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    tileColor: selected ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.3) : null,
+                    trailing: selected ? const Icon(Icons.check) : null,
+                    subtitle: subModel.language.isNotEmpty
+                        ? Opacity(opacity: 0.6, child: Text(subModel.language.capitalize()))
+                        : null,
+                    onTap: () async {
+                      // Leaving the Sushi online subtitle for a normal track — drop the mark.
+                      sushiClearActiveSubtitle(ref);
+                      if (SushiEnv.isEnabled && !sushiIsPersonalPlayback(playbackModel)) {
+                        unawaited(sushiRememberManualSubtitleTrack(playbackModel.item, subModel));
+                      }
+                      final newModel = await playbackModel.setSubtitle(subModel, player);
+                      ref.read(playBackModel.notifier).update((state) => newModel);
+                      if (newModel != null) {
+                        await ref.read(playbackModelHelper).shouldReload(newModel);
+                      }
+                    },
+                  );
+                },
+              ),
+            ],
+          );
+        },
+      );
+    },
+  );
+}
+
+Future<void> showAudioSelection(BuildContext context) {
+  return showDialog(
+    context: context,
+    builder: (context) {
+      return Consumer(
+        builder: (context, ref, child) {
+          final playbackModel = ref.watch(playBackModel);
+          final player = ref.watch(videoPlayerProvider);
+          return SimpleDialog(
+            contentPadding: const EdgeInsets.only(top: 8, bottom: 24),
+            title: Row(
+              children: [
+                Text(context.localized.audio(1)),
+              ],
+            ),
+            children: playbackModel?.audioStreams?.mapIndexed(
+              (index, audioStream) {
+                final selected = playbackModel.mediaStreams?.defaultAudioStreamIndex == audioStream.index;
+                return ListTile(
+                    title: Text(audioStream.label(context)),
+                    tileColor: selected ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.3) : null,
+                    subtitle: audioStream.language.isNotEmpty
+                        ? Opacity(opacity: 0.6, child: Text(audioStream.language.capitalize()))
+                        : null,
+                    onTap: () async {
+                      final newModel = await playbackModel.setAudio(audioStream, player);
+                      ref.read(playBackModel.notifier).update((state) => newModel);
+                      if (newModel != null) {
+                        await ref.read(playbackModelHelper).shouldReload(newModel);
+                      }
+                    });
+              },
+            ).toList(),
+          );
+        },
+      );
+    },
+  );
+}
+
+Future<void> showPlaybackSpeed(BuildContext context) {
+  return showDialog(
+    context: context,
+    builder: (context) {
+      return StatefulBuilder(builder: (context, setState) {
+        return Consumer(
+          builder: (context, ref, child) {
+            final player = ref.watch(videoPlayerProvider);
+            final lastSpeed = ref.watch(playbackRateProvider);
+            return SimpleDialog(
+              contentPadding: const EdgeInsets.only(top: 8, bottom: 24),
+              title: Row(children: [Text(context.localized.playbackRate)]),
+              children: [
+                const Divider(),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12).copyWith(top: 6),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      Text("${context.localized.speed}: "),
+                      Flexible(
+                        child: SizedBox(
+                          width: 250,
+                          child: FladderSlider(
+                            min: 0.25,
+                            max: 3,
+                            value: lastSpeed,
+                            divisions: 55,
+                            onChanged: (value) {
+                              ref.read(playbackRateProvider.notifier).state = value;
+                              player.setSpeed(value);
+                            },
+                          ),
+                        ),
+                      ),
+                      Text("x${lastSpeed.toStringAsFixed(2)}")
+                    ].addInBetween(const SizedBox(width: 8)),
+                  ),
+                )
+              ],
+            );
+          },
+        );
+      });
+    },
+  );
+}
+
+Future<void> showOrientationOptions(BuildContext context, WidgetRef ref) async {
+  Set<DeviceOrientation> orientations = ref
+      .read(videoPlayerSettingsProvider
+          .select((value) => value.allowedOrientations ?? Set.from(DeviceOrientation.values)))
+      .toSet();
+
+  void toggleOrientation(DeviceOrientation orientation) {
+    if (orientations.contains(orientation) && orientations.length > 1) {
+      orientations.remove(orientation);
+    } else {
+      orientations.add(orientation);
+    }
+  }
+
+  await showDialog(
+    context: context,
+    builder: (context) {
+      return StatefulBuilder(builder: (context, state) {
+        return SimpleDialog(
+          contentPadding: const EdgeInsets.only(top: 8, bottom: 24),
+          title: Row(children: [Text(context.localized.playerSettingsOrientationTitle)]),
+          children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12).copyWith(top: 6),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  const Divider(),
+                  ...DeviceOrientation.values.map(
+                    (orientation) => CheckboxListTile(
+                      title: Text(orientation.label(context)),
+                      value: orientations.contains(orientation),
+                      onChanged: (value) {
+                        state(() => toggleOrientation(orientation));
+                      },
+                    ),
+                  ),
+                  const Divider(),
+                  Row(
+                    mainAxisSize: MainAxisSize.max,
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      ElevatedButton(
+                        onPressed: () => Navigator.of(context).pop(),
+                        child: Text(context.localized.cancel),
+                      ),
+                      FilledButton(
+                        onPressed: () {
+                          Navigator.of(context).pop();
+                          ref.read(videoPlayerSettingsProvider.notifier).toggleOrientation(orientations);
+                        },
+                        child: Text(context.localized.save),
+                      ),
+                    ].addInBetween(const SizedBox(width: 8)),
+                  )
+                ].addInBetween(const SizedBox(width: 8)),
+              ),
+            )
+          ],
+        );
+      });
+    },
+  );
+}

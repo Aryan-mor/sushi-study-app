@@ -1,0 +1,27 @@
+import 'package:flutter/material.dart';
+
+import 'package:fladder/util/adaptive_layout/adaptive_layout.dart';
+
+class DefaultSliverBottomPadding extends StatelessWidget {
+  const DefaultSliverBottomPadding({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return (AdaptiveLayout.viewSizeOf(context) != ViewSize.phone)
+        ? SliverPadding(padding: EdgeInsets.only(bottom: 60 + MediaQuery.of(context).padding.bottom))
+        : SliverPadding(padding: EdgeInsets.only(bottom: 100 + MediaQuery.of(context).padding.bottom));
+  }
+}
+
+class DefaultSliverTopBadding extends StatelessWidget {
+  const DefaultSliverTopBadding({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return (AdaptiveLayout.viewSizeOf(context) == ViewSize.phone)
+        ? const SliverToBoxAdapter()
+        : SliverPadding(
+            padding:
+                EdgeInsets.only(top: MediaQuery.of(context).padding.top + AdaptiveLayout.of(context).topBarHeight));
+  }
+}

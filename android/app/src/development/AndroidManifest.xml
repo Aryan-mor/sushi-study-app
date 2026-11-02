@@ -1,0 +1,5 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Local `development` flavor only. Lets `npm run android` exercise in-app APK install.
+         Play AAB (`production`) must never carry this — see src/direct/AndroidManifest.xml. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+</manifest>
